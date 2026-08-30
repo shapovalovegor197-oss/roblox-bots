@@ -28,6 +28,9 @@ from brainbot.brainrots import normalize                   # noqa: E402
 
 MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
 MIN_INCOME = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
+# Сколько перерождений сделать за прогон. Ребёрн СТИРАЕТ деньги и брейнротов —
+# это прямое задание пользователя от 31.08: «нужно реберхов 10 сделать».
+REBIRTHS_GOAL = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 
 RESERVE = 8.0          # секунд до конца лока, когда пора домой
 BUY_HOLD = 2.0         # промпт держать, иначе не засчитывается
@@ -55,6 +58,7 @@ if (_box.width, _box.height) != (int(s.window["width"]), int(s.window["height"])
 
 f = Farmer(window=wins[0], hand=Hand(wins[0], s.input), tuning=FarmTuning(),
            screens_dir=s.screenshots_dir)
+f.allow_wipe = True          # разрешено пользователем: цель — цепочка ребёрнов
 
 STATUS = "var/farm_status.json"
 state = {
@@ -73,6 +77,8 @@ state = {
     "доход_в_сек": None,
     "собрано_всего": 0.0,
     "цели_видел": 0,
+    "ребёрнов": 0,
+    "ребёрнов_цель": REBIRTHS_GOAL,
     "лента_видела": {},
     "последнее": "",
 }
@@ -306,6 +312,42 @@ def shopping(deadline_left) -> None:
     save()
 
 
+def maybe_rebirth(after_target: bool = False) -> None:
+    """Попробовать переродиться, если похоже, что требования выполнены.
+
+    Проверку «хватает ли» делает сам `Farmer.rebirth`: он читает окно, сверяет
+    сумму и ИМЕННЫЕ требования с тем, что стоит на базе, и отказывается, если
+    чего-то нет. Поэтому здесь достаточно грубого условия — иначе мы просто
+    зря откроем и закроем окно.
+
+    После удачного ребёрна требования МЕНЯЮТСЯ (следующий уровень дороже и
+    просит других брейнротов), поэтому цели перечитываем сразу.
+    """
+    if state["ребёрнов"] >= REBIRTHS_GOAL:
+        return
+    need = state["нужно_денег"] or 0
+    cash = state["кэш"] or 0
+    if cash < need and not after_target:
+        return
+    say("пробую ребёрн: кэш %s, нужно %s" % (cash, need))
+    try:
+        ok = f.rebirth()
+    except Exception as exc:                                # noqa: BLE001
+        state["сбоев"] += 1
+        say("ребёрн сорвался: %s" % exc)
+        return
+    if not ok:
+        return
+    state["ребёрнов"] += 1
+    state["цели_куплены"] = []
+    say("!!! РЕБЁРН %d из %d сделан" % (state["ребёрнов"], REBIRTHS_GOAL))
+    # Деньги и брейнроты стёрты — перечитываем и то, и другое.
+    state["кэш"] = f.read_hud_cash()
+    state["кэш_старт"] = state["кэш"]
+    _money.clear()
+    read_goals()
+
+
 def circle() -> None:
     if not f.ensure_connected():
         state["сбоев"] += 1
@@ -350,11 +392,27 @@ def circle() -> None:
         f.shot("fail_belt")
         say("до ленты не дошёл")
         return
+    bought_target = len(state["цели_куплены"])
     shopping(f.lock_left_now)
+    # Купили цель — идём на ребёрн НЕМЕДЛЕННО: база открыта между локами, и
+    # соседи воруют. Именно из-за краж база и пустеет.
+    if len(state["цели_куплены"]) > bought_target:
+        maybe_rebirth(after_target=True)
+    elif state["кругов"] % 3 == 0:
+        maybe_rebirth()
     state["кругов"] += 1
     say("круг %d закрыт: покупок всего %d, кэш %s"
         % (state["кругов"], state["покупок"], state["кэш"]))
 
+
+# Мера поворота — своим замером, а не числом из кода: ползунок
+# чувствительности в клиенте двигает человек, и он переживает перезапуск.
+try:
+    f.set_work_view()
+    _rate = f.calibrate_turn()
+    say("мера поворота: %s град/ед" % (round(_rate, 4) if _rate else "не измерена"))
+except Exception as _exc:                                   # noqa: BLE001
+    say("замер поворота сорвался: %s" % _exc)
 
 load_goals()
 if not state["цели"]:
@@ -379,6 +437,6 @@ while time.time() < end:
     if state["кругов"] and state["кругов"] % 25 == 0:
         read_goals()
 
-say("прогон окончен: кругов %d, локов %d, покупок %d, кэш %s -> %s, сбоев %d"
+say("прогон окончен: кругов %d, локов %d, покупок %d, ребёрнов %d, кэш %s, сбоев %d"
     % (state["кругов"], state["локов"], state["покупок"],
-       state["кэш_старт"], state["кэш"], state["сбоев"]))
+       state["ребёрнов"], state["кэш"], state["сбоев"]))

@@ -625,6 +625,59 @@ class Farmer:
                 return True
         return False
 
+    def calibrate_turn(self, step: int = 50, tries: int = 8) -> float | None:
+        """Измерить градусы на единицу мыши. ВЕРТИКАЛЬ КАМЕРЫ НЕ ТРОГАЕТСЯ.
+
+        Зачем самозамер: поворот зависит от ползунка Mouse Sensitivity в самом
+        клиенте, а его двигает человек и переживает перезапуск. За ночь 31.08
+        мера менялась трижды — 0.102, 0.070 и 0.217 градуса на единицу, и
+        каждый раз бот терял и плиту, и ленту, а в логах это выглядело как
+        поломка навигации. Числу в коде тут не место.
+
+        Способ: крутим мелкими шагами и меряем горизонтальный сдвиг сцены
+        фазовой корреляцией; пиксели в градусы — через угол обзора (у Roblox
+        по умолчанию 70 по вертикали). Берём медиану, потому что отдельные
+        кадры не совпадают (мимо бегают игроки, крутится RNG Machine).
+
+        Заодно пересчитывает шаг разворота: длинную протяжку игра берёт не
+        целиком, замеренная доля — примерно две трети.
+        """
+        box = self.window.client_box()
+        deg_per_px = (2 * math.degrees(math.atan(
+            math.tan(math.radians(35.0)) * box.width / box.height))) / box.width
+
+        def scene():
+            fr = self.frame()
+            h, w = fr.shape[:2]
+            cut = fr[int(h * 0.12):int(h * 0.55), int(w * 0.25):int(w * 0.95)]
+            return cv2.cvtColor(cut, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+        prev = scene()
+        rates = []
+        for _ in range(tries):
+            self.hand.look(step, 0)
+            time.sleep(0.45)
+            now = scene()
+            (dx, _dy), resp = cv2.phaseCorrelate(prev, now)
+            prev = now
+            if resp < 0.05 or abs(dx) < 5:
+                continue
+            rates.append(abs(dx) * deg_per_px / step)
+        if len(rates) < 3:
+            log.warning("поворот замерить не вышло (%d годных из %d) — "
+                        "оставляю прежнюю меру %.4f град/ед",
+                        len(rates), tries, self.hand.SMALL_DEG_PER_UNIT)
+            return None
+        rates.sort()
+        rate = rates[len(rates) // 2]
+        self.hand.SMALL_DEG_PER_UNIT = rate
+        self.hand.TURN_STEP_DEG = self.hand.TURN_STEP_UNITS * rate * 0.65
+        log.info("поворот: %.4f град/ед (полный оборот %.0f единиц), "
+                 "шаг %d единиц = %.1f град; замеров %d",
+                 rate, 360.0 / rate, self.hand.TURN_STEP_UNITS,
+                 self.hand.TURN_STEP_DEG, len(rates))
+        return rate
+
     def set_work_view(self) -> None:
         """Привести камеру к РАБОЧЕМУ виду: известный зум и известный наклон.
 
@@ -2915,8 +2968,15 @@ class Farmer:
 
         Успех проверяем по счётчику Rebirths в лидерборде: он должен вырасти.
         """
-        if not self.to_reference():
-            return False
+        # Раньше здесь стояло `to_reference()` — тяжёлый выход в опорное
+        # состояние с наведением на вывеску. Для того чтобы нажать кнопку в
+        # левой колонке, он не нужен, а падает и стоит секунд сорок. Достаточно
+        # чистого экрана и известной камеры.
+        self.reset_to_base()
+        time.sleep(1.4)
+        self.set_work_view()
+        self.close_players_table()
+        self.dismiss_modals()
         before = (self.me() or {}).get("rebirths")
         # «Rebirth» OCR стабильно читает как «nebirth» — r превращается в n.
         # Поэтому ищем по куску «birth»: он выживает при любой такой подмене.
