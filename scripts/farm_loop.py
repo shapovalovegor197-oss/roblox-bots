@@ -38,6 +38,21 @@ log.setup(s.logs_dir)
 wins = enum_roblox_windows()
 if not wins:
     sys.exit("окон Roblox нет — клиент не запущен")
+# Размер окна проверяем ДО первого кадра. Всё зрение считает долями кадра, и
+# сжатое по высоте окно (замер 30.08: 1280x599 вместо 1280x720) сдвигает разом
+# все области: наличные, промпты, пад в виде сверху. Ищется такое молча — по
+# кривым пеленгам, а не по ошибке.
+_box = wins[0].client_box()
+if (_box.width, _box.height) != (int(s.window["width"]), int(s.window["height"])):
+    print("окно %dx%d вместо %sx%s — привожу к рабочему"
+          % (_box.width, _box.height, s.window["width"], s.window["height"]), flush=True)
+    import ctypes
+    from ctypes import wintypes as _wt
+    _r = _wt.RECT()
+    ctypes.windll.user32.GetWindowRect(wins[0].hwnd, ctypes.byref(_r))
+    wins[0].move_resize(_r.left, _r.top, int(s.window["width"]), int(s.window["height"]))
+    time.sleep(0.6)
+
 f = Farmer(window=wins[0], hand=Hand(wins[0], s.input), tuning=FarmTuning(),
            screens_dir=s.screenshots_dir)
 
