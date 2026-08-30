@@ -196,58 +196,40 @@ def at_belt() -> bool:
     return "purchase" in " ".join(x.lower() for x, _, _ in ocr.lines(f.frame()))
 
 
-def goto_belt(max_steps: int = 10, tries: int = 2) -> float | None:
+def goto_belt(max_steps: int = 10, tries: int = 4) -> float | None:
     """Из базы к ленте. Возвращает секунды пути либо None.
 
-    Пеленг сверху отказывает не редко: пад опознаётся не с каждого положения
-    (в прогоне 14:43 подряд четыре круга «до ленты не дошёл»). Поэтому есть
-    запасной ход — развернуться на полкруга и идти вслепую: мы выходим ОТ
-    плиты лока, то есть из глубины базы, и лента заведомо позади.
+    Разворот на полкруга с первого раза не попадает: длинную протяжку игра
+    берёт не целиком, а какую именно долю — зависит от чувствительности
+    клиента, которую двигает человек. Замер 31.08: заказ 175 градусов дал на
+    деле около 90, и бот уходил вдоль базы.
+
+    Поэтому калибровке тут не верим, а ДОВОРАЧИВАЕМ: не нашли ленту за проход —
+    добавили полсотни градусов и пошли снова. Респавн делаем только перед
+    первой попыткой, иначе каждый доворот терялся бы.
     """
     t = time.time()
-    shift = getattr(f.hand, "shift_lock", False)
     for attempt in range(tries):
-        f.reset_to_base()
-        time.sleep(1.2)
-        f.set_work_view()
-        f.close_players_table()
-        if shift:
-            # ШИФТ-ЛОК: респавн смотрит ВНУТРЬ базы, лента — строго позади.
-            # Разворот на 180 прямой мышью (мышь под mouselook, ПКМ не нужна).
-            # 3250 единиц = 180 замерено 30.08 (1808 давали ~100). Потом вперёд
-            # к промпту Purchase — замер: лента за 3 шага.
-            for _ in range(6):
-                f.hand.look(3250 // 6, 0); time.sleep(0.12)
-            time.sleep(0.4)
-            for _ in range(max_steps):
-                f.hand.hold("w", 0.5); time.sleep(0.22)
-                if at_belt():
-                    return time.time() - t
-            continue
-        if f.face_belt_from_top() is not None:
-            # Кадр СРАЗУ после разворота: если до ленты не дошли, по нему видно,
-            # куда мы вообще смотрели — внутрь базы или в мир. Вечером 30.08
-            # четыре захода подряд закончились «до ленты не дошёл», и разбирать
-            # было нечего: снимков этого места не делалось.
+        if attempt == 0:
+            f.reset_to_base()
+            time.sleep(1.2)
+            f.set_work_view()
+            f.close_players_table()
+            if f.face_belt_from_top() is None:
+                say("пад сверху не опознан — иду к ленте вслепую, полкруга назад")
+                f.hand.turn_degrees(175)
+            # Кадр сразу после разворота: если до ленты не дойдём, по нему
+            # видно, куда бот вообще смотрел.
             f.shot("belt_turned")
-            for _ in range(max_steps):
-                f.hand.hold("w", 0.6)
-                time.sleep(0.25)
-                if at_belt():
-                    return time.time() - t
-            f.shot("belt_walked")
-        elif attempt == tries - 1:
-            say("пад сверху не опознан — иду к ленте вслепую, полкруга назад")
-            full = int(f.nav.full_turn)
-            for _ in range(4):
-                f.hand.look(full // 8, 0)
-                time.sleep(0.15)
-            time.sleep(0.4)
-            for _ in range(max_steps + 4):
-                f.hand.hold("w", 0.6)
-                time.sleep(0.25)
-                if at_belt():
-                    return time.time() - t
+        else:
+            f.hand.turn_degrees(50)
+            time.sleep(0.3)
+        for _ in range(max_steps):
+            f.hand.hold("w", 0.6)
+            time.sleep(0.25)
+            if at_belt():
+                return time.time() - t
+        f.shot("belt_walked_%d" % attempt)
     return None
 
 

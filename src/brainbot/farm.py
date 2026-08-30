@@ -1592,13 +1592,25 @@ class Farmer:
         """
         fr = self.frame() if frame is None else frame
         h, w = fr.shape[:2]
+        # Читаем не полный кадр, а середину С УВЕЛИЧЕНИЕМ. Подписи над
+        # брейнротами мелкие и полупрозрачные: на кадре 31.08 глазами видны
+        # «Collect $937K» и «Collect $8M», а полнокадровый OCR не находит ни
+        # одной — и сбор честно отвечал «собирать нечего» при восьми миллионах
+        # на базе.
+        band = fr[int(h * 0.10):int(h * 0.80), int(w * 0.18):int(w * 0.85)]
+        if not band.size:
+            return []
+        big = cv2.resize(band, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        bh, bw = big.shape[:2]
         out = []
-        for text, x, y in ocr.lines(fr):
+        for text, x, y in ocr.lines(big):
             t = text.lower()
             if "collect" not in t or "zone" in t:
                 continue
-            if 0.22 < x / w < 0.78 and 0.10 < y / h < 0.80:
-                out.append((x / w, y / h))
+            # обратно в доли ПОЛНОГО кадра
+            fx = (0.18 + (x / bw) * 0.67)
+            fy = (0.10 + (y / bh) * 0.70)
+            out.append((fx, fy))
         return out
 
     def collect_money(self, rows: int = 3, attempts: int = 2) -> float:
@@ -1625,13 +1637,17 @@ class Farmer:
             # `before` выходил заниженным, и следующий верный кадр проходил
             # порог правдоподобия как «прирост». Нет подписей Collect в кадре —
             # выходим сразу, не тратя проход и не рискуя ложным сбором.
+            # Подписи — подсказка, а не приговор. Раньше их отсутствие
+            # прекращало сбор, и при живых «Collect $8M» на базе бот уходил ни
+            # с чем: OCR просто не видел мелкий текст. Судить о сборе надо по
+            # ДЕНЬГАМ — чтение наличных теперь этому под стать.
             if not self.collect_labels():
                 for _ in range(2):
                     self.hand.hold("w", 0.4)
                     time.sleep(0.2)
                 if not self.collect_labels():
-                    log.info("подписей Collect нет — собирать нечего")
-                    return 0.0
+                    log.info("подписей Collect не вижу — прохожу вслепую, "
+                             "судить буду по деньгам")
             # Вид сверху — только БЕЗ шифт-лока. С ним камера держится сама и
             # наклон вниз уводит в небо; а респавн и так ставит лицом внутрь
             # базы, вдоль рядов падов, что и нужно для сбора.
