@@ -317,8 +317,20 @@ class Hand:
             except Exception:  # noqa: BLE001
                 pass
 
-    def look(self, dx: int, dy: int = 0, steps: int = 12) -> None:
-        """Поворот камеры: зажать ПКМ и вести мышь. dx>0 вправо, dy>0 вниз.
+    # Сколько единиц отдавать за один сдвиг мыши. Чем меньше, тем плавнее идёт
+    # камера. Было `steps=12` на любой поворот: разворот на 180 градусов летел
+    # двенадцатью рывками по 150 единиц — резко и на глаз, и для игры. Теперь
+    # шаг постоянный по ВЕЛИЧИНЕ, а не по количеству: длинный поворот просто
+    # занимает больше времени.
+    UNITS_PER_MOVE = 12
+    MOVE_PAUSE = 0.012
+    MAX_MOVES = 240          # потолок, чтобы совсем длинный поворот не завис
+
+    def look(self, dx: int, dy: int = 0, steps: int | None = None) -> None:
+        """Поворот камеры ПЛАВНО: зажать ПКМ и вести мышь. dx>0 вправо, dy>0 вниз.
+
+        `steps` можно задать явно, но по умолчанию число сдвигов считается от
+        величины поворота, чтобы каждый сдвиг был мелким.
 
         Сдвиг ОТНОСИТЕЛЬНЫЙ и с погашенной акселерацией: без этого Windows
         масштабирует движение по своей кривой («Enhance pointer precision»),
@@ -332,13 +344,16 @@ class Hand:
         # тут дерётся с самим шифт-локом: большие повороты уводили камеру в небо
         # (замерено 30.08 на развороте к ленте). Двигаем относительно, курсор в
         # центр не тащим — игра сама держит его по центру.
+        if steps is None:
+            big = max(abs(int(dx)), abs(int(dy)))
+            steps = max(12, min(self.MAX_MOVES, -(-big // self.UNITS_PER_MOVE)))
         if self.shift_lock and not self.direct:
             sx = int(dx / steps) if steps else int(dx)
             sy = int(dy / steps) if steps else int(dy)
             for _ in range(max(1, steps)):
                 pydirectinput.moveRel(sx, sy, relative=True,
                                       disable_mouse_acceleration=True)
-                time.sleep(0.015)
+                time.sleep(self.MOVE_PAUSE)
             return
         # Курсор — В ОКНО, прежде чем жать правую кнопку.
         #
@@ -366,7 +381,7 @@ class Hand:
             for _ in range(steps):
                 pydirectinput.moveRel(sx, sy, relative=True,
                                       disable_mouse_acceleration=True)
-                time.sleep(0.015)
+                time.sleep(self.MOVE_PAUSE)
         finally:
             time.sleep(0.06)
             pydirectinput.mouseUp(button="right")
