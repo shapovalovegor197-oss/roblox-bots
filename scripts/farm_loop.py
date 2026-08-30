@@ -32,7 +32,11 @@ MIN_INCOME = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
 # это прямое задание пользователя от 31.08: «нужно реберхов 10 сделать».
 REBIRTHS_GOAL = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 
-RESERVE = 8.0          # секунд до конца лока, когда пора домой
+# Секунд до конца лока, когда пора домой. Не константа: дорога домой плюс сам
+# лок занимают около сорока секунд, и если уходить с ленты за восемь, база
+# стоит открытой почти минуту каждый круг — а её именно в это время и
+# обворовывают. Считаем по факту: медиана прошлых локов плюс запас.
+RESERVE_MIN = 20.0
 BUY_HOLD = 2.0         # промпт держать, иначе не засчитывается
 PAYBACK_SEC = 400.0    # покупаем, если цена окупается быстрее этого
 
@@ -262,6 +266,19 @@ def worth_buying(item, price) -> tuple[bool, str]:
     return True, "доход %s/с" % income
 
 
+def reserve_now() -> float:
+    """Сколько секунд оставить на дорогу домой и запирание.
+
+    Берём медиану замеренных локов и добавляем шесть секунд. Пока замеров нет,
+    считаем по последнему известному времени — 45 секунд.
+    """
+    times = sorted(state["локи_секунд"][-5:])
+    if not times:
+        return 45.0
+    mid = times[len(times) // 2]
+    return max(RESERVE_MIN, mid + 6.0)
+
+
 def shopping(deadline_left) -> None:
     """Стоять у ленты и покупать, пока горит лок."""
     f.hand.move(13, 65)          # курсор в угол, чтобы не закрывал надписи
@@ -269,7 +286,7 @@ def shopping(deadline_left) -> None:
     note_cash(cash)
     if state["кэш_старт"] is None:
         state["кэш_старт"] = cash
-    while deadline_left() > RESERVE:
+    while deadline_left() > reserve_now():
         card = f.read_card()
         if not card["ready"]:
             time.sleep(0.2)
