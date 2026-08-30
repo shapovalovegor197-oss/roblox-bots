@@ -1863,38 +1863,79 @@ class Farmer:
         # раньше — по самому крупному пятну.
         return best if best is not None else fallback
 
-    def face_base_from_top(self) -> float | None:
-        """Развернуться лицом внутрь базы, определившись по виду сверху.
+    def _pad_bearing(self) -> float | None:
+        """Пеленг на пад из вида сверху, в градусах. None — пад не опознан.
 
-        Возвращает снятый пеленг в градусах либо None, если пад не опознан.
+        Камеру возвращает в рабочий наклон, чтобы вызывающему не приходилось
+        помнить, в каком состоянии её оставили.
         """
         self.hand.pitch_top()
         time.sleep(0.7)
         top = self.frame()
         h, w = top.shape[:2]
         pad = self.pad_from_top(top)
-        if not pad:
-            log.warning("сверху пад не опознан — разворот отменён")
-            self.hand.pitch_normal()
-            return None
-        px, py, share = pad
-        bearing = math.degrees(math.atan2(px - w / 2.0, -(py - h / 2.0)))
-        log.info("сверху: пад x=%.3f y=%.3f (%.0f%% кадра), пеленг %+.1f град",
-                 px / w, py / h, share * 100, bearing)
         self.hand.pitch_normal(back=self.tuning.view_pitch_back, already_top=True)
-        time.sleep(0.5)
-        self.hand.look(int(self.nav.full_turn * bearing / 360.0), 0)
-        time.sleep(0.6)
+        time.sleep(0.3)
+        if not pad:
+            return None
+        px, py, _ = pad
+        return math.degrees(math.atan2(px - w / 2.0, -(py - h / 2.0)))
 
-        # ЗДЕСЬ БЫЛА ДОВОРОТКА НА 180 по подписям внешнего мира — снята 30.08
-        # вечером как вредная. Замер: за 46 дневных локов она не понадобилась ни
-        # разу, а вечером срабатывала на КАЖДОМ (подписи соседних баз и Trade
-        # Plaza видны и из своей базы). Ценой был не только сам разворот: после
-        # него бот честно смотрел наружу, и `lock_via_top` шёл в полный осмотр.
-        # Наведение выросло с 0.5 до 16.9 с, лок с 20 до 60-90 с.
-        # Неоднозначность пеленга разбирает не текст, а свечение плиты: его
-        # ищет `aim_at_plate`, и оно врать не умеет.
-        return bearing
+    def turn_to_bearing(self, target: float, tol: float = 12.0,
+                        tries: int = 4) -> float | None:
+        """Довернуться так, чтобы пеленг на пад стал `target`. С ОБРАТНОЙ СВЯЗЬЮ.
+
+        Открытым циклом — «полный оборот столько-то единиц, значит на 174
+        градуса надо столько» — сюда не попасть. Замер 30.08 по пеленгу пада:
+        600 единиц дают 42 градуса, 1200 — 66 вместо 84, 2400 — 96 вместо 168.
+        Игра берёт тем меньшую долю протяжки, чем она длиннее, и одной цифрой
+        это не описывается. Плюс сама цифра держится только до тех пор, пока
+        никто не трогал ползунок чувствительности в клиенте: вечером 30.08 его
+        сдвинули с 1.0 на 0.36, и все дневные развороты стали втрое короче.
+
+        Поэтому крутим шагами и после каждого перечитываем пеленг: сколько
+        реально повернулось, столько и есть. Заодно уточняем масштаб — за
+        два-три шага он сходится к тому, что игра отдаёт СЕЙЧАС.
+
+        Возвращает остаточную ошибку в градусах либо None, если пад не виден.
+        """
+        scale = 1.0
+        err = None
+        for i in range(tries):
+            now = self._pad_bearing()
+            if now is None:
+                log.warning("сверху пад не опознан — разворот отменён")
+                return None
+            err = (target - now + 540.0) % 360.0 - 180.0
+            if abs(err) <= tol:
+                log.info("разворот сошёлся: пеленг %+.1f, цель %+.1f (шаг %d)",
+                         now, target, i)
+                return err
+            units = int(self.nav.full_turn * err / 360.0 * scale)
+            if not units:
+                return err
+            log.info("разворот: пеленг %+.1f, надо %+.1f, кручу %d единиц",
+                     now, err, units)
+            self.hand.look(units, 0)
+            time.sleep(0.5)
+            after = self._pad_bearing()
+            if after is None:
+                return err
+            got = (after - now + 540.0) % 360.0 - 180.0
+            # Масштаб правим по факту: сколько градусов дала единица на самом
+            # деле. Границы широкие, но не бесконечные — один кривой замер не
+            # должен уводить в разнос.
+            if abs(got) > 3.0:
+                scale = max(0.3, min(4.0, scale * abs(err) / abs(got)))
+        return err
+
+    def face_base_from_top(self) -> float | None:
+        """Развернуться лицом внутрь базы, определившись по виду сверху.
+
+        Возвращает остаточную ошибку в градусах либо None, если пад не опознан.
+        Цель — пеленг 0: пад перед носом.
+        """
+        return self.turn_to_bearing(0.0)
 
     def aim_at_plate(self, tol: float = 0.03, tries: int = 8) -> float | None:
         """Довернуться на плиту, НЕ двигаясь с места. Возвращает остаточный промах.
@@ -2032,7 +2073,7 @@ class Farmer:
         return self.confirm_lock(tries=2)
 
     def face_belt_from_top(self) -> float | None:
-        """Развернуться от базы наружу, к ленте. Пеленг на пад плюс 180 градусов.
+        """Развернуться от базы наружу, к ленте: пеленг на пад плюс 180.
 
         Наводиться на ленту по её синему цвету НЕЛЬЗЯ: дорожка ВНУТРИ базы
         такая же синяя, и `find_conveyor` уверенно берёт её. Проверено прогоном —
@@ -2042,27 +2083,7 @@ class Farmer:
         Надёжнее геометрия: сверху видно пад, он всегда со стороны базы, значит
         лента — в противоположную сторону.
         """
-        self.hand.pitch_top()
-        time.sleep(0.7)
-        top = self.frame()
-        h, w = top.shape[:2]
-        pad = self.pad_from_top(top)
-        if not pad:
-            log.warning("сверху пад не опознан — к ленте не разворачиваюсь")
-            self.hand.pitch_normal()
-            return None
-        px, py, share = pad
-        bearing = math.degrees(math.atan2(px - w / 2.0, -(py - h / 2.0)))
-        away = bearing + 180.0
-        if away > 180.0:
-            away -= 360.0
-        log.info("сверху: пад x=%.3f y=%.3f, на базу %+.1f, на ленту %+.1f",
-                 px / w, py / h, bearing, away)
-        self.hand.pitch_normal(back=self.tuning.view_pitch_back, already_top=True)
-        time.sleep(0.5)
-        self.hand.look(int(self.nav.full_turn * away / 360.0), 0)
-        time.sleep(0.8)
-        return away
+        return self.turn_to_bearing(180.0)
 
     def inside_base(self, frame=None) -> bool:
         """Мы внутри базы? По подписям, которые есть только там."""

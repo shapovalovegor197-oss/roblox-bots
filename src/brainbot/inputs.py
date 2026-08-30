@@ -317,8 +317,28 @@ class Hand:
             except Exception:  # noqa: BLE001
                 pass
 
+    # Сколько единиц можно отдать игре ОДНОЙ протяжкой. Больше — игра берёт
+    # не всё: замер 30.08 по пеленгу пада — 600 единиц дают 21.4 и 20.4
+    # градуса, а 1200 той же протяжкой всего 27 вместо 42. Потери растут с
+    # размером порции, поэтому большие развороты режем на куски.
+    LOOK_CHUNK = 600
+
     def look(self, dx: int, dy: int = 0, steps: int = 12) -> None:
-        """Поворот камеры: зажать ПКМ и вести мышь. dx>0 вправо, dy>0 вниз.
+        """Поворот камеры порциями по LOOK_CHUNK. dx>0 вправо, dy>0 вниз."""
+        big = max(abs(int(dx)), abs(int(dy)))
+        if big > self.LOOK_CHUNK:
+            parts = -(-big // self.LOOK_CHUNK)          # округление вверх
+            for i in range(parts):
+                # Остаток раскладываем ровно, чтобы сумма совпала с заказанным.
+                px = int(round(dx * (i + 1) / parts)) - int(round(dx * i / parts))
+                py = int(round(dy * (i + 1) / parts)) - int(round(dy * i / parts))
+                self._look_once(px, py, steps)
+                time.sleep(0.08)
+            return
+        self._look_once(dx, dy, steps)
+
+    def _look_once(self, dx: int, dy: int = 0, steps: int = 12) -> None:
+        """Одна протяжка: зажать ПКМ и вести мышь. dx>0 вправо, dy>0 вниз.
 
         Сдвиг ОТНОСИТЕЛЬНЫЙ и с погашенной акселерацией: без этого Windows
         масштабирует движение по своей кривой («Enhance pointer precision»),
