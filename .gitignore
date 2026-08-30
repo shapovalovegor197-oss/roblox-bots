@@ -1,0 +1,7 @@
+config/accounts.json
+var/
+__pycache__/
+*.pyc
+.venv/
+venv/
+templates/_raw/

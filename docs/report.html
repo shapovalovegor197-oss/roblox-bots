@@ -1,0 +1,790 @@
+<title>Склад брейнротов</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@500;600;700;800&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --ground: #E9EBEE;
+  --surface: #FAFBFC;
+  --surface-2: #F0F2F5;
+  --ink: #12161C;
+  --ink-soft: #5A6472;
+  --ink-faint: #8892A0;
+  --rule: #CBD1D9;
+  --rule-soft: #DDE1E7;
+  --accent: #C4005F;
+  --accent-wash: #FCE7F0;
+  --ok: #1B6E45;
+  --ok-wash: #E2F0E8;
+  --warn: #8A5E00;
+  --warn-wash: #F7EDD6;
+  --risk: #B01B22;
+  --risk-wash: #FAE4E4;
+
+  --f-display: "Golos Text", "Segoe UI", system-ui, sans-serif;
+  --f-body: "Literata", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+
+  --measure: 68ch;
+  --pad: clamp(1.25rem, 4vw, 3rem);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0E1116;
+    --surface: #161B22;
+    --surface-2: #1C222B;
+    --ink: #E6EAF0;
+    --ink-soft: #9AA5B4;
+    --ink-faint: #6C7788;
+    --rule: #29313D;
+    --rule-soft: #212934;
+    --accent: #FF4D9D;
+    --accent-wash: #2A0F1E;
+    --ok: #52C68A;
+    --ok-wash: #10241B;
+    --warn: #D9A227;
+    --warn-wash: #251C09;
+    --risk: #F0616A;
+    --risk-wash: #2A1214;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground: #0E1116;
+  --surface: #161B22;
+  --surface-2: #1C222B;
+  --ink: #E6EAF0;
+  --ink-soft: #9AA5B4;
+  --ink-faint: #6C7788;
+  --rule: #29313D;
+  --rule-soft: #212934;
+  --accent: #FF4D9D;
+  --accent-wash: #2A0F1E;
+  --ok: #52C68A;
+  --ok-wash: #10241B;
+  --warn: #D9A227;
+  --warn-wash: #251C09;
+  --risk: #F0616A;
+  --risk-wash: #2A1214;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17px;
+  line-height: 1.65;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--pad);
+  display: flex;
+  flex-direction: column;
+  gap: 3.5rem;
+}
+
+/* ---------- header ---------- */
+
+.masthead {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-top: clamp(1rem, 5vw, 3rem);
+}
+
+.kicker {
+  font-family: var(--f-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.2rem;
+  align-items: center;
+}
+.kicker .dim { color: var(--ink-faint); }
+
+h1 {
+  font-family: var(--f-display);
+  font-weight: 800;
+  font-size: clamp(2.4rem, 7vw, 4.2rem);
+  line-height: 1.02;
+  letter-spacing: -0.028em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.dek {
+  font-size: clamp(1.05rem, 2.2vw, 1.25rem);
+  color: var(--ink-soft);
+  max-width: 60ch;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.meta-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--f-mono);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+.meta-bar b { color: var(--ink); font-weight: 600; }
+
+/* ---------- verdict strip ---------- */
+
+.verdicts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.verdict {
+  background: var(--surface);
+  padding: 1.5rem 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.verdict .n {
+  font-family: var(--f-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.verdict .h {
+  font-family: var(--f-display);
+  font-weight: 700;
+  font-size: 1.12rem;
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+}
+.verdict p { margin: 0; font-size: 0.92rem; color: var(--ink-soft); line-height: 1.5; }
+
+/* ---------- sections ---------- */
+
+section {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 0.6rem;
+}
+.sec-head .num {
+  font-family: var(--f-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+  flex: none;
+}
+h2 {
+  font-family: var(--f-display);
+  font-weight: 700;
+  font-size: clamp(1.35rem, 3vw, 1.75rem);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0;
+  text-wrap: balance;
+}
+
+h3 {
+  font-family: var(--f-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+p { margin: 0; max-width: var(--measure); }
+section > p, section > ul, section > ol { max-width: var(--measure); }
+
+a { color: var(--accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+ul, ol { margin: 0; padding-left: 1.35rem; display: flex; flex-direction: column; gap: 0.5rem; }
+li::marker { color: var(--ink-faint); }
+
+code {
+  font-family: var(--f-mono);
+  font-size: 0.86em;
+  background: var(--surface-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 0.08em 0.34em;
+}
+
+strong { font-weight: 600; }
+
+/* ---------- timeline table ---------- */
+
+.scroller { overflow-x: auto; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 520px;
+  font-size: 0.94rem;
+}
+th, td { text-align: left; padding: 0.85rem 1rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th {
+  font-family: var(--f-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 500;
+  border-bottom: 1px solid var(--ink);
+}
+td.when { font-family: var(--f-mono); font-size: 0.85rem; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+tr:last-child td { border-bottom: none; }
+
+/* ---------- callout ---------- */
+
+.callout {
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  background: var(--surface);
+  border-radius: 3px;
+  padding: 1.4rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  max-width: var(--measure);
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout .tag {
+  font-family: var(--f-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--accent);
+}
+.callout.warn .tag { color: var(--warn); }
+.callout p { font-size: 0.95rem; max-width: none; }
+
+/* ---------- capacity stats ---------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.stat { background: var(--surface); padding: 1.3rem 1.2rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.stat .v {
+  font-family: var(--f-display);
+  font-weight: 800;
+  font-size: 2.1rem;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.stat .v small { font-size: 0.9rem; font-weight: 600; color: var(--ink-faint); letter-spacing: 0; }
+.stat .l { font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+
+.formula {
+  font-family: var(--f-mono);
+  font-size: 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1rem 1.2rem;
+  max-width: var(--measure);
+  overflow-x: auto;
+}
+
+/* ---------- path cards ---------- */
+
+.paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; }
+.path {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.path.pick { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.path-top { display: flex; flex-direction: column; gap: 0.6rem; }
+.chip {
+  align-self: flex-start;
+  font-family: var(--f-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  padding: 0.28rem 0.6rem;
+  border-radius: 2px;
+}
+.chip.pick { background: var(--accent-wash); color: var(--accent); }
+.chip.no { background: var(--risk-wash); color: var(--risk); }
+.chip.aux { background: var(--ok-wash); color: var(--ok); }
+.path p { font-size: 0.93rem; color: var(--ink-soft); max-width: none; }
+.path dl { margin: 0; display: flex; flex-direction: column; gap: 0.55rem; font-size: 0.88rem; }
+.path dt {
+  font-family: var(--f-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.path dd { margin: 0.15rem 0 0; color: var(--ink); }
+
+/* ---------- architecture diagram ---------- */
+
+.arch { display: flex; flex-direction: column; gap: 0; align-items: stretch; max-width: 760px; }
+.node {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1.1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.node > .title {
+  font-family: var(--f-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.node > .title .host { color: var(--ink-faint); font-weight: 400; letter-spacing: 0.06em; }
+.node ul { padding-left: 1.1rem; font-size: 0.9rem; gap: 0.3rem; }
+.subnodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.75rem; }
+.sub {
+  background: var(--surface-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 0.8rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.sub b { font-family: var(--f-display); font-size: 0.85rem; font-weight: 600; }
+.sub span { font-family: var(--f-mono); font-size: 0.76rem; color: var(--ink-soft); line-height: 1.45; }
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0 0.55rem 1.25rem;
+  font-family: var(--f-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.link::before {
+  content: "";
+  width: 1px;
+  height: 26px;
+  background: var(--rule);
+  flex: none;
+  margin-left: 0.4rem;
+}
+
+/* ---------- jobs ---------- */
+
+.jobs { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+.job { background: var(--surface); padding: 1.1rem 1.3rem; display: grid; grid-template-columns: minmax(140px, 180px) 1fr; gap: 0.4rem 1.5rem; align-items: baseline; }
+.job b { font-family: var(--f-display); font-weight: 600; font-size: 0.98rem; }
+.job span { font-size: 0.93rem; color: var(--ink-soft); }
+@media (max-width: 620px) { .job { grid-template-columns: 1fr; } }
+
+/* ---------- risks ---------- */
+
+.risks { display: flex; flex-direction: column; gap: 0.85rem; }
+.risk-item {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--ink-faint);
+  border-radius: 3px;
+  padding: 1rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.risk-item.hi { border-left-color: var(--risk); }
+.risk-item.mid { border-left-color: var(--warn); }
+.risk-item .sev {
+  font-family: var(--f-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.risk-item.hi .sev { color: var(--risk); }
+.risk-item.mid .sev { color: var(--warn); }
+.risk-item b { font-family: var(--f-display); font-weight: 600; font-size: 1rem; }
+.risk-item p { font-size: 0.92rem; color: var(--ink-soft); max-width: none; }
+
+/* ---------- plan ---------- */
+
+.plan { display: flex; flex-direction: column; }
+.stage {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  gap: 1.25rem;
+  padding: 1.1rem 0;
+  border-top: 1px solid var(--rule);
+  align-items: start;
+}
+.stage:last-child { border-bottom: 1px solid var(--rule); }
+.stage .st {
+  font-family: var(--f-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  padding-top: 0.25rem;
+}
+.stage .body { display: flex; flex-direction: column; gap: 0.3rem; }
+.stage b { font-family: var(--f-display); font-weight: 600; font-size: 1rem; }
+.stage span { font-size: 0.93rem; color: var(--ink-soft); }
+@media (max-width: 520px) { .stage { grid-template-columns: 1fr; gap: 0.35rem; } }
+
+/* ---------- questions ---------- */
+
+.qs { display: flex; flex-direction: column; gap: 0.7rem; counter-reset: q; }
+.q {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.9rem;
+  align-items: baseline;
+  background: var(--accent-wash);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.9rem 1.15rem;
+  font-size: 0.96rem;
+}
+.q::before {
+  counter-increment: q;
+  content: counter(q);
+  font-family: var(--f-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ---------- sources ---------- */
+
+.sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.5rem 2rem; font-size: 0.87rem; }
+.sources a { display: block; padding: 0.3rem 0; }
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding: 1.5rem 0 3rem;
+  font-family: var(--f-mono);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">
+      <span>Ресерч</span>
+      <span class="dim">28 августа 2026</span>
+      <span class="dim">roblox-bots</span>
+    </div>
+    <h1>Склад брейнротов</h1>
+    <p class="dek">Как хранить брейнротов на своих аккаунтах и передавать друзьям ботами: что игра уже сделала за нас, три пути к автоматизации, и где здесь настоящая работа.</p>
+    <div class="meta-bar">
+      <span>Тип: <b>личный проект</b></span>
+      <span>Статус: <b>кода нет, есть план</b></span>
+      <span>Блокеров: <b>нет</b></span>
+    </div>
+  </header>
+
+  <div class="verdicts">
+    <div class="verdict">
+      <span class="n">Вывод 01</span>
+      <span class="h">Передача — три клика</span>
+      <p>Трейд кросс-сервер, по нику, кнопкой в GUI. Приватный сервер не нужен, стыковка по серверам не нужна.</p>
+    </div>
+    <div class="verdict">
+      <span class="n">Вывод 02</span>
+      <span class="h">Работа — в прокачке</span>
+      <p>Свежий склад держит 10 брейнротов, прокачанный 27. Авто-фарм и авто-ребёрн — самая большая часть проекта.</p>
+    </div>
+    <div class="verdict">
+      <span class="n">Вывод 03</span>
+      <span class="h">Макрос, а не инъекция</span>
+      <p>Внешнее зрение и ввод. Hyperion не видит того, чего нет в его процессе. Экзекуторы — не на складах.</p>
+    </div>
+  </div>
+
+  <section>
+    <div class="sec-head"><span class="num">01</span><h2>Механика передачи: вопрос закрыт</h2></div>
+    <p>За 2026 год трейд переезжал дважды, и второй переезд снял почти всю сложность передачи.</p>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Когда</th><th>Что стало</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="when">21.02.2026</td>
+            <td>Появилась <strong>Trade Machine</strong> — физический автомат у красной дорожки. Вкладки <code>Server</code>, <code>Friends</code>, <code>Search</code>.</td>
+          </tr>
+          <tr>
+            <td class="when">13.06.2026<br><span style="font-size:0.78rem">Update 53</span></td>
+            <td>Автомат <strong>убран</strong>. Трейд — кнопка в основном интерфейсе рядом с <code>Codes</code>, работает из любой точки карты.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="tag">Проверено</span>
+      <p><strong>Кросс-сервер работает.</strong> Трейд кидается кнопкой с любого сервера на любой, по нику. Отсюда три следствия: приватный сервер не нужен (79 Robux в месяц экономим), складам не надо координироваться по серверам, и стыковка «оба зашли в одно место в одно время» не нужна вообще. Нужен только онлайн обеих сторон в момент трейда.</p>
+    </div>
+
+    <h3>Правила, которые важны для автоматизации</h3>
+    <ul>
+      <li>Гейтов нет — ни по уровню, ни по ребёрнам, ни по возрасту аккаунта.</li>
+      <li>Обе стороны жмут <code>Ready</code>; до финального подтверждения ничего не двигается.</li>
+      <li><strong>Не трейдится:</strong> brainrot bases и mutation bases (привязаны к аккаунту), event-exclusive и выловленные personal prize брейнроты.</li>
+      <li>Seasonal Base Skins трейдятся, но только после ротации из шопа.</li>
+    </ul>
+
+    <p>Практический вывод: <strong>сложность проекта не в трейде.</strong> Трейд — три клика. Сложность в том, чтобы аккаунты были живы, онлайн и содержали то, что мы думаем, что они содержат.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">02</span><h2>Ёмкость склада: считаем аккаунты</h2></div>
+    <p>Брейнроты лежат на базе, слоты открываются ребёрнами. Свежий аккаунт держит десять штук, прокачанный — двадцать семь.</p>
+    <div class="stats">
+      <div class="stat"><span class="v">10</span><span class="l">1-й этаж</span></div>
+      <div class="stat"><span class="v">8</span><span class="l">2-й этаж · с ребёрна 2</span></div>
+      <div class="stat"><span class="v">7</span><span class="l">3-й этаж · с ребёрна 10</span></div>
+      <div class="stat"><span class="v">27</span><span class="l">потолок · 18 ребёрнов</span></div>
+    </div>
+    <div class="formula">аккаунтов-складов = коллекция / 27, округлить вверх, +1 про запас</div>
+    <p>Отсюда задача, которую легко проглядеть: <strong>прокачка самих складов</strong>. Авто-фарм кэша и авто-ребёрн — иначе каждый новый аккаунт это десять слотов, а не двадцать семь, разница почти втрое. По объёму работы это, скорее всего, самая большая часть проекта: держать бота онлайн и жать кнопку трейда — часы, довести аккаунт до 18 ребёрнов — дни фарма.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">03</span><h2>Три пути автоматизации</h2></div>
+    <div class="paths">
+
+      <div class="path pick">
+        <div class="path-top">
+          <span class="chip pick">Основа</span>
+          <h3>Внешний макрос: зрение и ввод</h3>
+        </div>
+        <p>Отдельная программа смотрит в экран и двигает мышь. Память процесса Roblox не трогает вообще — Hyperion не видит, потому что видеть нечего.</p>
+        <dl>
+          <div><dt>Стек</dt><dd><code>dxcam</code> · <code>OpenCV</code> matchTemplate · <code>PaddleOCR</code> · <code>pydirectinput</code></dd></div>
+          <div><dt>Референс</dt><dd><a href="https://github.com/Namesnipes/Steal-A-Brainrot-Macro">Namesnipes/Steal-A-Brainrot-Macro</a> — открытый Python-макрос под эту игру. Умеет авто-фарм, то есть бóльшая часть самого долгого этапа уже написана</dd></div>
+          <div><dt>Требует</dt><dd>фиксированное разрешение, оконный режим, зафиксированные графика и UI-скейл. Окно нельзя сворачивать</dd></div>
+          <div><dt>Минусы</dt><dd>хрупко к патчам UI, секунды на шаг, один экран на клиент</dd></div>
+        </dl>
+      </div>
+
+      <div class="path">
+        <div class="path-top">
+          <span class="chip no">Не на складах</span>
+          <h3>Executor и Luau</h3>
+        </div>
+        <p>Прямой вызов RemoteEvent-ов: трейд и фарм без OCR и без «промахнулся мышкой». И с риском, который стоит ровно столько, сколько лежит на аккаунте.</p>
+        <dl>
+          <div><dt>Барьер</dt><dd>Hyperion с 2023 года; публичных бесплатных байпасов в 2026 нет</dd></div>
+          <div><dt>Рынок</dt><dd>Wave (платный), Xeno, Solara, Swift. Ломаются после каждого патча клиента</dd></div>
+          <div><dt>Цена ошибки</dt><dd>бан на уровне аккаунта — то есть потеря всей коллекции на складе</dd></div>
+          <div><dt>Отдельно</dt><dd>значительная часть «бесплатных экзекуторов» из выдачи — стилеры</dd></div>
+        </dl>
+      </div>
+
+      <div class="path">
+        <div class="path-top">
+          <span class="chip aux">Вспомогательный слой</span>
+          <h3>Web API без клиента</h3>
+        </div>
+        <p>Диспетчер и валидатор, не исполнитель. Внутри игры не умеет ничего — трейд делается только клиентом.</p>
+        <dl>
+          <div><dt>Библиотека</dt><dd><a href="https://github.com/ro-py/ro.py">ro.py</a> (Python) или <a href="https://github.com/AlroviOfficial/RoZod">RoZod</a> (TS). <strong>noblox.js мёртв с 29.03.2026</strong> — не брать</dd></div>
+          <div><dt>Авторизация</dt><dd>кука <code>.ROBLOSECURITY</code></dd></div>
+          <div><dt>Умеет</dt><dd>ник → userId, presence друга (чтобы не гонять трейд вхолостую), друзья, запуск клиента по deep link</dd></div>
+        </dl>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">04</span><h2>Инфраструктура: аккаунты, клиенты, сессии</h2></div>
+    <div class="jobs">
+      <div class="job"><b>Мульти-инстанс</b><span>Roblox держит мьютекс <code>ROBLOX_singletonMutex</code>; трюк — захватить его первым. <code>MultiBloxy</code>, <code>Fishstrap</code>, Bloxstrap 2.9.1 без автообновления. Roblox сопротивляется и закрывает лишние окна через случайное время — супервизор обязателен.</span></div>
+      <div class="job"><b>Менеджеры аккаунтов</b><span><a href="https://github.com/ic3w0lf22/Roblox-Account-Manager">Roblox Account Manager</a> — классика, <a href="https://github.com/NotVeen/RoPilot">RoPilot</a>, <code>evanovar/RobloxAccountManager</code> на Python.</span></div>
+      <div class="job"><b>Связка альтов</b><span>С августа 2024 у разработчиков игр есть Ban API с alt-детектом по IP и HWID. Ловит посредственно — в тестах два из восьми, и для личных альтов бояться этого всерьёз не стоит. Одно правило всё же имеет смысл: складские аккаунты не добавлять в штатный account switcher — это добровольная связка внутри системы Roblox. Прокси не нужны.</span></div>
+      <div class="job"><b>Anti-AFK</b><span>Платформенный кик примерно через 20 минут без ввода, отключить нельзя. Макрос решает джиглом. Не спасает от краша, шатдауна сервера и кика самой игрой — нужен авто-реджойн.</span></div>
+      <div class="job"><b>Deep link</b><span><code>roblox://experiences/start?placeId=…</code> — так поднимаем клиент и так же возвращаем его в игру после вылета.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">05</span><h2>Железо: ограничение не то, о котором думаешь</h2></div>
+    <p>Ryzen 5 3500U, Vega 8, 16 ГБ. По памяти три-четыре клиента влезают — упрёмся раньше в iGPU и теплопакет, чем в ОЗУ. Графика на 1–2, окно поменьше: макросу важна не картинка, а стабильность координат.</p>
+    <div class="callout warn">
+      <span class="tag">Вот это настоящее ограничение</span>
+      <p>Машина аварийно выключается примерно дважды в день — Kernel-Power 41, умирающая батарея и забитое охлаждение. Бот-склад должен висеть онлайн сутками, и внезапный ребут это не «перезапустим», а разлогин всех клиентов посреди фарма.</p>
+    </div>
+    <ul>
+      <li><strong>Починить машину</strong> — замена батареи и чистка с термопастой. Нужно в любом случае, безотносительно ботов.</li>
+      <li><strong>Или вынести ботов на отдельную железку</strong> — старый десктоп, мини-ПК. Не обязательно мощный, обязательно стабильный.</li>
+      <li><strong>VPS без GPU — плохой вариант:</strong> Roblox падает на софт-рендер DirectX WARP и работает, но Hyperion может заблокировать виртуальную среду.</li>
+    </ul>
+    <p>Начинать можно и на текущей машине, с одним-двумя клиентами. Автозапуск после ребута и восстановление сессии всё равно нужны в дизайне — ребуты просто заставят сделать их сразу, а не «потом».</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">06</span><h2>Архитектура</h2></div>
+    <p>Оркестратор на сервере не нужен — всё живёт на одной машине.</p>
+    <div class="arch">
+      <div class="node">
+        <span class="title"><span>Супервизор</span><span class="host">локально</span></span>
+        <ul>
+          <li>реестр складов: аккаунт → что лежит → сколько слотов свободно</li>
+          <li>задачи: фарм · ребёрн · отдать X другу Y</li>
+          <li>автозапуск после ребута, восстановление сессий</li>
+          <li>Telegram-уведомления — бот уже есть</li>
+        </ul>
+        <div class="subnodes">
+          <div class="sub"><b>Сессии</b><span>account manager + мульти-инстанс + anti-AFK + авто-реджойн</span></div>
+          <div class="sub"><b>Зрение и ввод</b><span>dxcam → OpenCV / OCR → pydirectinput</span></div>
+          <div class="sub"><b>Сценарии</b><span>трейд · фарм · ребёрн · чтение базы</span></div>
+        </div>
+      </div>
+      <div class="link">ro.py</div>
+      <div class="node">
+        <span class="title"><span>Web API</span><span class="host">снаружи игры</span></span>
+        <ul><li>ник → userId · presence друга · друзья · deep link</li></ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">07</span><h2>Что именно делают боты</h2></div>
+    <div class="jobs">
+      <div class="job"><b>Хранение</b><span>Склад держится онлайн, база заперта авто-локом, авто-реджойн после кика.</span></div>
+      <div class="job"><b>Передача</b><span>«Отдать X другу Y»: проверить ник через API, дождаться его онлайна, кинуть трейд, положить нужный предмет, подтвердить, скрин в Telegram.</span></div>
+      <div class="job"><b>Приём</b><span>Принять трейд от друга или со своего же аккаунта, положить на свободный слот.</span></div>
+      <div class="job"><b>Прокачка складов</b><span>Авто-фарм кэша и авто-ребёрн до 18 ребёрнов и 27 слотов. Самая долгая часть — и та, где больше всего готового кода в референсном макросе.</span></div>
+      <div class="job"><b>Учёт</b><span>Знать, что где лежит. OCR базы после каждой операции, чтобы реестр не врал.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">08</span><h2>Риски, которые надо заложить в дизайн</h2></div>
+    <div class="risks">
+      <div class="risk-item hi">
+        <span class="sev">Высокий</span>
+        <b>Бан склада = потеря всего, что на нём лежит</b>
+        <p>Ценное распределять по разным аккаунтам, не держать коллекцию в одной корзине.</p>
+      </div>
+      <div class="risk-item hi">
+        <span class="sev">Высокий</span>
+        <b>Экзекуторы — это стилеры</b>
+        <p>Если вообще пробовать, то только на изолированной машине. Никогда там, где залогинен основной аккаунт или браузер с рабочими доступами.</p>
+      </div>
+      <div class="risk-item mid">
+        <span class="sev">Средний</span>
+        <b>Патчи ломают зрение</b>
+        <p>После апдейта игры шаблоны кнопок и координаты уезжают. Нужен быстрый прогон-проверка перед тем, как оставлять ботов без присмотра.</p>
+      </div>
+      <div class="risk-item mid">
+        <span class="sev">Средний</span>
+        <b>Ребуты машины</b>
+        <p>Дважды в день, см. раздел 05. Восстановление сессий после ребута закладывать в дизайн сразу.</p>
+      </div>
+      <div class="risk-item">
+        <span class="sev">Постоянный</span>
+        <b>Roblox воюет с мульти-инстансом</b>
+        <p>Клиенты будут падать сами по себе. Супервизор нужен с первого дня, а не «потом».</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">09</span><h2>План</h2></div>
+    <div class="plan">
+      <div class="stage"><span class="st">Этап 0</span><div class="body"><b>Снять UI · 1–2 часа</b><span>Скрины трейд-GUI, базы, меню ребёрна. Зафиксировать разрешение и настройки графики, записать координаты.</span></div></div>
+      <div class="stage"><span class="st">Этап 1</span><div class="body"><b>Скелет</b><span>Репо, конфиг аккаунтов, запуск клиента по deep link, anti-AFK, авто-реджойн, супервизор с автозапуском после ребута.</span></div></div>
+      <div class="stage"><span class="st">Этап 2</span><div class="body"><b>Зрение</b><span>Шаблоны кнопок, OCR имён брейнротов и мутаций, чтение инвентаря базы — отсюда реестр «что где лежит».</span></div></div>
+      <div class="stage"><span class="st">Этап 3</span><div class="body"><b>Передача end-to-end</b><span>Сценарий трейда на двух своих аккаунтах, со скрином-пруфом.</span></div></div>
+      <div class="stage"><span class="st">Этап 4</span><div class="body"><b>Фарм и ребёрн</b><span>Взять за основу референсный макрос, довести склады до 27 слотов.</span></div></div>
+      <div class="stage"><span class="st">Этап 5</span><div class="body"><b>Удобство</b><span>Управление из Telegram: «отдай X другу Y», статус складов, алерты.</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="num">·</span><h2>Источники</h2></div>
+    <div class="sources">
+      <a href="https://allthings.how/steal-a-brainrot-trading-plaza-and-update-53-trading-changes-explained/">Trading Plaza и Update 53</a>
+      <a href="https://lootester.com/steal-a-brainrot-trading-guide/">Гайд по трейду, июль 2026</a>
+      <a href="https://www.sportskeeda.com/roblox-news/news-steal-brainrot-trade-machine-update-patch-notes">Trade Machine, патчноут</a>
+      <a href="https://rblxguide.com/games/steal-a-brainrot/updates/steal-a-brainrot-base-trading-guide-2026">Base trading guide, U53</a>
+      <a href="https://stealabrainrot.fandom.com/wiki/Base">Base: слоты и ребёрны</a>
+      <a href="https://roblox.fandom.com/wiki/Hyperion">Hyperion</a>
+      <a href="https://endsights.com/roblox-anti-cheat">Roblox anti-cheat в 2026</a>
+      <a href="https://github.com/Namesnipes/Steal-A-Brainrot-Macro">Steal-A-Brainrot-Macro</a>
+      <a href="https://github.com/ro-py/ro.py">ro.py</a>
+      <a href="https://github.com/AlroviOfficial/RoZod">RoZod</a>
+      <a href="https://github.com/noblox/noblox.js">noblox.js (deprecated)</a>
+      <a href="https://github.com/ic3w0lf22/Roblox-Account-Manager">Roblox Account Manager</a>
+      <a href="https://github.com/Zgoly/MultiBloxy">MultiBloxy</a>
+      <a href="https://create.roblox.com/docs/production/promotion/deeplinks">Deep links (Roblox docs)</a>
+      <a href="https://devforum.roblox.com/t/introducing-the-ban-api-and-alt-account-detection/3039740">Ban API и alt-детект</a>
+      <a href="https://serverspace.us/about/blog/how-to-run-roblox-clients-on-a-vps/">Roblox на VPS</a>
+    </div>
+  </section>
+
+  <footer>
+    <span>roblox-bots · research</span>
+    <span>28.08.2026</span>
+    <span>исходник: research/RESEARCH.md</span>
+  </footer>
+
+</div>

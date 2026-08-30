@@ -1,0 +1,130 @@
+{
+  "place_id": 109983668079237,
+  "game_name": "Steal a Brainrot",
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "layout": "stack",
+    "origin": [
+      0,
+      0
+    ],
+    "cascade_step": 24,
+    "_layout_note": "stack — окна друг на друге, экран перестаёт быть лимитом (нужен WGC). tile — сеткой, окна видимы, для отладки. none — не трогать."
+  },
+  "capture": {
+    "backend": "auto",
+    "_backend_note": "auto — WGC по hwnd, откат на снимок экрана. screen — принудительно снимок экрана (окна должны быть видимы)."
+  },
+  "optimize": {
+    "apply_fflags": true,
+    "target_fps": 20,
+    "pin_cores": true,
+    "reserve_threads": 4,
+    "background_priority": "below",
+    "headroom_gb": 2.0
+  },
+  "vision": {
+    "match_threshold": 0.8,
+    "template_dir": "templates",
+    "_regions_note": "Где искать каждый шаблон: [x0, y0, x1, y1] в ДОЛЯХ размера окна, 0..1. Доли, а не пиксели, чтобы смена разрешения не потребовала переписывать конфиг — пересняты будут только сами PNG. Область нужна не для скорости, а для точности: интерфейс полупрозрачный, и на движущемся 3D-фоне шум добирается до 0.9 в случайных местах. Настоящие элементы всегда на своих местах, поэтому область убирает ложные срабатывания надёжнее любого порога.",
+    "regions": {
+      "trade_button": [
+        0.0,
+        0.2,
+        0.17,
+        0.78
+      ],
+      "trade_window_title": [
+        0.25,
+        0.15,
+        0.55,
+        0.27
+      ],
+      "trade_close": [
+        0.62,
+        0.15,
+        0.72,
+        0.28
+      ],
+      "trade_tab_players": [
+        0.28,
+        0.24,
+        0.46,
+        0.35
+      ],
+      "trade_tab_history": [
+        0.42,
+        0.24,
+        0.6,
+        0.35
+      ],
+      "trade_tab_settings": [
+        0.55,
+        0.24,
+        0.73,
+        0.35
+      ],
+      "trade_search_icon": [
+        0.29,
+        0.32,
+        0.37,
+        0.42
+      ],
+      "trade_search_empty": [
+        0.32,
+        0.32,
+        0.61,
+        0.42
+      ],
+      "trade_send": [
+        0.54,
+        0.34,
+        0.71,
+        0.73
+      ]
+    }
+  },
+  "input": {
+    "backend": "focus",
+    "_backend_note": "focus — ввод через SendInput, достаётся окну в фокусе: надёжно, но действовать может только один клиент за раз. post — PostMessage прямо в окно по hwnd, фокус не нужен, клиенты работают параллельно. Перед переключением проверить: python run.py input-test --compare",
+    "move_duration": 0.12,
+    "click_jitter_px": 2,
+    "post_click_delay": [
+      0.18,
+      0.35
+    ],
+    "type_delay": [
+      0.04,
+      0.11
+    ],
+    "shift_lock": false,
+    "_shift_lock_note": "Шифт-лок включён в клиенте: прицел закреплён, ПКМ на ходу держать не надо. Если выключишь в игре — поставить false, иначе камера и персонаж разойдутся на ходу.",
+    "yield_to_user": true,
+    "yield_grace": 2.0,
+    "yield_resume_idle": 12.0,
+    "_yield_note": "Режим уступки: бот отпускает ввод, пока ты за компом (свежий живой ввод < yield_grace с), и возвращается после yield_resume_idle с тишины. Отличает твой ввод от своего низкоуровневым хуком."
+  },
+  "antiafk": {
+    "interval_sec": 480,
+    "key": "space"
+  },
+  "supervisor": {
+    "poll_sec": 10,
+    "launch_timeout_sec": 120,
+    "relaunch_backoff_sec": [
+      15,
+      30,
+      60,
+      120,
+      300
+    ]
+  },
+  "paths": {
+    "screenshots": "var/screens",
+    "logs": "var/logs",
+    "state": "var/state.json"
+  },
+  "nick": "RavenGoldenCode50",
+  "_nick_note": "наш ник в игре: по нему бот находит свою строку в лидерборде (кэш, ребёрны, кражи). Обычно берётся по куке, но кука может быть мертва"
+}

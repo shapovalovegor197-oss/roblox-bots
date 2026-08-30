@@ -1,0 +1,19 @@
+{
+  "_comment": "Скопировать в accounts.json и заполнить. accounts.json в .gitignore — куки это доступ к аккаунту.",
+  "_how_to_get_cookie": "Залогиниться на roblox.com в браузере → F12 → Application → Cookies → https://www.roblox.com → скопировать значение .ROBLOSECURITY целиком, вместе с префиксом _|WARNING:-DO-NOT-SHARE-THIS...",
+
+  "accounts": [
+    {
+      "name": "sklad-1",
+      "cookie": "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you...",
+      "role": "storage",
+      "enabled": true
+    },
+    {
+      "name": "farm-1",
+      "cookie": "",
+      "role": "farm",
+      "enabled": false
+    }
+  ]
+}

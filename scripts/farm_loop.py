@@ -1,0 +1,369 @@
+# -*- coding: utf-8 -*-
+"""Автономный круг фермы: лок -> лента -> закуп -> домой -> лок.
+
+Что здесь важного, помимо самого цикла:
+
+* бюджет вылазки считается по НАШИМ часам (`lock_until`). Игра говорит
+  длительность один раз вспышкой «You locked your base for 80 Seconds!»,
+  дальше зрение в этом месте не участвует;
+* цель закупа берётся из окна ребёрна, а не задаётся руками: требуемые
+  брейнроты покупаются независимо от цены, остальные — только если окупаются
+  быстрее порога;
+* состояние пишется в `var/farm_status.json` после каждого круга, чтобы за
+  прогоном можно было следить, не трогая мышь.
+
+Запуск: python scripts/farm_loop.py [минут] [мин_доход]
+"""
+import json
+import sys
+import time
+import traceback
+
+sys.path.insert(0, "src")
+from brainbot import config, log, ocr                      # noqa: E402
+from brainbot.window import enum_roblox_windows            # noqa: E402
+from brainbot.inputs import Hand                           # noqa: E402
+from brainbot.farm import Farmer, FarmTuning               # noqa: E402
+from brainbot.brainrots import normalize                   # noqa: E402
+
+MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
+MIN_INCOME = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
+
+RESERVE = 8.0          # секунд до конца лока, когда пора домой
+BUY_HOLD = 2.0         # промпт держать, иначе не засчитывается
+PAYBACK_SEC = 400.0    # покупаем, если цена окупается быстрее этого
+
+s = config.load()
+log.setup(s.logs_dir)
+wins = enum_roblox_windows()
+if not wins:
+    sys.exit("окон Roblox нет — клиент не запущен")
+f = Farmer(window=wins[0], hand=Hand(wins[0], s.input), tuning=FarmTuning(),
+           screens_dir=s.screenshots_dir)
+
+STATUS = "var/farm_status.json"
+state = {
+    "начат": time.strftime("%H:%M:%S"),
+    "кругов": 0,
+    "локов": 0,
+    "локи_секунд": [],
+    "покупок": 0,
+    "куплено": [],
+    "цели": [],
+    "цели_куплены": [],
+    "нужно_денег": None,
+    "кэш": None,
+    "кэш_старт": None,
+    "сбоев": 0,
+    "доход_в_сек": None,
+    "собрано_всего": 0.0,
+    "цели_видел": 0,
+    "лента_видела": {},
+    "последнее": "",
+}
+_money = []          # (время, кэш) — по ним считаем доход
+_last_read = [time.time()]
+
+
+def sane_cash(prev):
+    """Прочитать деньги с проверкой на правдоподобие.
+
+    OCR путает разряды: «$121.86K» приходит как 6 139 360, то есть шесть
+    миллионов вместо ста двадцати тысяч. Для порога перерождения в $12.5M это
+    смертельно — бот решит, что накопил. Правило: деньги не могут вырасти
+    быстрее, чем капает доход (берём щедрые $20 000/с), а падение проверяем
+    вторым чтением.
+    """
+    now = f.read_hud_cash()
+    if now is None or prev is None:
+        return now
+    dt = max(1.0, time.time() - _last_read[0])
+    if now > prev + 20000 * dt + 50e6 or now < prev * 0.2:
+        again = f.read_hud_cash()
+        if again is None or again > prev + 20000 * dt or again < prev * 0.2:
+            say("чтение денег отброшено: %s при прежних %s" % (now, prev))
+            return prev
+        now = again
+    return now
+
+
+def note_cash(value) -> None:
+    """Запомнить деньги и пересчитать доход. Покупки его занижают, поэтому
+    берём только участки, где деньги РОСЛИ."""
+    if value is None:
+        return
+    state["кэш"] = value
+    _last_read[0] = time.time()
+    _money.append((time.time(), value))
+    ups = [(t1 - t0, c1 - c0) for (t0, c0), (t1, c1) in zip(_money, _money[1:])
+           if c1 > c0 and t1 - t0 > 5]
+    if ups:
+        state["доход_в_сек"] = round(sum(c for _, c in ups) / sum(t for t, _ in ups), 1)
+
+
+def save() -> None:
+    state["обновлено"] = time.strftime("%H:%M:%S")
+    with open(STATUS, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, ensure_ascii=False, indent=1)
+
+
+def say(msg: str) -> None:
+    state["последнее"] = msg
+    print(msg, flush=True)
+    save()
+
+
+KNOW = "var/knowledge.json"
+
+
+def load_goals() -> None:
+    """Цели из памяти бота — на случай, если окно ребёрна не открылось."""
+    try:
+        with open(KNOW, encoding="utf-8") as fh:
+            k = json.load(fh)
+        state["цели"] = k.get("цели_ребёрна") or []
+        state["нужно_денег"] = k.get("нужно_денег")
+        if state["цели"]:
+            say("цели из памяти: %s" % ", ".join(state["цели"]))
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+def remember_goals() -> None:
+    try:
+        with open(KNOW, encoding="utf-8") as fh:
+            k = json.load(fh)
+        k["цели_ребёрна"] = state["цели"]
+        k["нужно_денег"] = state["нужно_денег"]
+        with open(KNOW, "w", encoding="utf-8") as fh:
+            json.dump(k, fh, ensure_ascii=False, indent=2)
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+def read_goals() -> None:
+    """Требования ребёрна: сумма и именные брейнроты."""
+    try:
+        f.close_players_table()
+        if not f.open_menu_item("birth"):
+            say("окно ребёрна не открылось — цели оставляю прежними")
+            return
+        time.sleep(0.6)
+        info = f.read_rebirth_window()
+        # Закрыть ОБЯЗАТЕЛЬНО и проверить. Незакрытое окно перекрывает середину
+        # кадра, и дальше бот слеп: ни вида сверху, ни свечения плиты. Ровно так
+        # 30.08 сгорели четыре лока подряд.
+        if not f.dismiss_modals():
+            f.shot("goals_modal_stuck")
+            say("окно ребёрна не закрылось — снял кадр goals_modal_stuck")
+        if info["need_items"]:
+            state["цели"] = info["need_items"]
+        if info["need_cash"]:
+            state["нужно_денег"] = info["need_cash"]
+        remember_goals()
+        say("цели: %s, нужно $%s, накоплено $%s"
+            % (", ".join(state["цели"]), info["need_cash"], info["have_cash"]))
+    except Exception as exc:                                # noqa: BLE001
+        say("цели прочитать не вышло: %s" % exc)
+
+
+def at_belt() -> bool:
+    return "purchase" in " ".join(x.lower() for x, _, _ in ocr.lines(f.frame()))
+
+
+def goto_belt(max_steps: int = 10, tries: int = 2) -> float | None:
+    """Из базы к ленте. Возвращает секунды пути либо None.
+
+    Пеленг сверху отказывает не редко: пад опознаётся не с каждого положения
+    (в прогоне 14:43 подряд четыре круга «до ленты не дошёл»). Поэтому есть
+    запасной ход — развернуться на полкруга и идти вслепую: мы выходим ОТ
+    плиты лока, то есть из глубины базы, и лента заведомо позади.
+    """
+    t = time.time()
+    shift = getattr(f.hand, "shift_lock", False)
+    for attempt in range(tries):
+        f.reset_to_base()
+        time.sleep(1.2)
+        f.set_work_view()
+        f.close_players_table()
+        if shift:
+            # ШИФТ-ЛОК: респавн смотрит ВНУТРЬ базы, лента — строго позади.
+            # Разворот на 180 прямой мышью (мышь под mouselook, ПКМ не нужна).
+            # 3250 единиц = 180 замерено 30.08 (1808 давали ~100). Потом вперёд
+            # к промпту Purchase — замер: лента за 3 шага.
+            for _ in range(6):
+                f.hand.look(3250 // 6, 0); time.sleep(0.12)
+            time.sleep(0.4)
+            for _ in range(max_steps):
+                f.hand.hold("w", 0.5); time.sleep(0.22)
+                if at_belt():
+                    return time.time() - t
+            continue
+        if f.face_belt_from_top() is not None:
+            # Кадр СРАЗУ после разворота: если до ленты не дошли, по нему видно,
+            # куда мы вообще смотрели — внутрь базы или в мир. Вечером 30.08
+            # четыре захода подряд закончились «до ленты не дошёл», и разбирать
+            # было нечего: снимков этого места не делалось.
+            f.shot("belt_turned")
+            for _ in range(max_steps):
+                f.hand.hold("w", 0.6)
+                time.sleep(0.25)
+                if at_belt():
+                    return time.time() - t
+            f.shot("belt_walked")
+        elif attempt == tries - 1:
+            say("пад сверху не опознан — иду к ленте вслепую, полкруга назад")
+            full = int(f.nav.full_turn)
+            for _ in range(4):
+                f.hand.look(full // 8, 0)
+                time.sleep(0.15)
+            time.sleep(0.4)
+            for _ in range(max_steps + 4):
+                f.hand.hold("w", 0.6)
+                time.sleep(0.25)
+                if at_belt():
+                    return time.time() - t
+    return None
+
+
+def worth_buying(item, price) -> tuple[bool, str]:
+    """Брать ли. Цели — всегда; остальных — только если быстро окупятся."""
+    if item is None:
+        return False, "неизвестный"
+    want = {normalize(n) for n in state["цели"]}
+    if normalize(item.name) in want:
+        return True, "ЦЕЛЬ"
+    income = item.base_income or 0
+    if income < MIN_INCOME:
+        return False, "доход %s" % income
+    if price and income and price / income > PAYBACK_SEC:
+        return False, "окупается %.0f с" % (price / income)
+    return True, "доход %s/с" % income
+
+
+def shopping(deadline_left) -> None:
+    """Стоять у ленты и покупать, пока горит лок."""
+    f.hand.move(13, 65)          # курсор в угол, чтобы не закрывал надписи
+    cash = f.read_hud_cash()
+    note_cash(cash)
+    if state["кэш_старт"] is None:
+        state["кэш_старт"] = cash
+    while deadline_left() > RESERVE:
+        card = f.read_card()
+        if not card["ready"]:
+            time.sleep(0.2)
+            continue
+        item = card.get("item")
+        if item is not None:
+            state["лента_видела"][item.name] = state["лента_видела"].get(item.name, 0) + 1
+        take, why = worth_buying(item, card.get("price"))
+        if not take:
+            time.sleep(0.3)
+            continue
+        name = item.name
+        if why == "ЦЕЛЬ":
+            state["цели_видел"] += 1
+            say("ЦЕЛЬ НА ЛЕНТЕ: %s, цена %s — беру" % (name, card.get("price")))
+        f.hand.interact(BUY_HOLD)
+        time.sleep(0.5)
+        now = sane_cash(cash)
+        if now is not None and cash is not None and now < cash - 1:
+            state["покупок"] += 1
+            state["куплено"].append(name)
+            if normalize(name) in {normalize(n) for n in state["цели"]}:
+                state["цели_куплены"].append(name)
+                say("!!! КУПЛЕНА ЦЕЛЬ %s за %.0f" % (name, cash - now))
+            else:
+                say("куплено %s (%s): %.0f -> %.0f" % (name, why, cash, now))
+        elif why == "ЦЕЛЬ":
+            say("ЦЕЛЬ %s: удержание E не засчиталось, пробую ещё" % name)
+            f.hand.interact(BUY_HOLD + 0.8)
+            time.sleep(0.6)
+            now = sane_cash(cash)
+            if now is not None and cash is not None and now < cash - 1:
+                state["покупок"] += 1
+                state["куплено"].append(name)
+                state["цели_куплены"].append(name)
+                say("!!! КУПЛЕНА ЦЕЛЬ %s со второго раза" % name)
+        if now is not None:
+            cash = now
+            note_cash(now)
+    save()
+
+
+def circle() -> None:
+    if not f.ensure_connected():
+        state["сбоев"] += 1
+        say("клиент не вернулся в игру")
+        time.sleep(30)
+        return
+
+    if f.lock_left_now() <= 0:
+        t0 = time.time()
+        before = sane_cash(state["кэш"]) or state["кэш"]
+        left = f.lock_with_retries(attempts=2)
+        if not left:
+            state["сбоев"] += 1
+            say("лок не вышел за %.1f с" % (time.time() - t0))
+            return
+        state["локов"] += 1
+        state["локи_секунд"].append(round(time.time() - t0, 1))
+        # Дорога к плите идёт мимо брейнротов, а деньги забираются проходом —
+        # значит лок ЗАОДНО и собирает. Проверяем это числом, а не верой: если
+        # прирост нулевой, делаем отдельный проход.
+        # Сбор — отдельным проходом, ВСЕГДА. Дорога к плите идёт по центру и
+        # брейнротов не задевает: замерено, проход по центру дал ноль, а проход
+        # от пада внутрь — +$703 000.
+        # Сбор — через круг. Он стоит 40-45 секунд из 80-секундного окна лока,
+        # и если делать его каждый раз, у ленты остаётся полминуты — мало,
+        # чтобы дождаться нужного брейнрота. Деньги за пропущенный круг никуда
+        # не денутся: они копятся на самих брейнротах.
+        collected = f.collect_money(attempts=1) if state["кругов"] % 2 == 0 else 0.0
+        # После сбора деньги ПРЫГАЮТ на миллионы — это законно, и фильтр
+        # правдоподобия тут не нужен: он отбрасывал верное «3 000 000 при
+        # прежних 1 300 000» как невозможный рост.
+        after = f.read_hud_cash() or before
+        if collected > 0:
+            state["собрано_всего"] += collected
+        note_cash(after)
+        say("заперто на %d с (за %.1f с), собрано %.0f, кэш %s"
+            % (left, time.time() - t0, collected, after))
+
+    walked = goto_belt()
+    if walked is None:
+        state["сбоев"] += 1
+        f.shot("fail_belt")
+        say("до ленты не дошёл")
+        return
+    shopping(f.lock_left_now)
+    state["кругов"] += 1
+    say("круг %d закрыт: покупок всего %d, кэш %s"
+        % (state["кругов"], state["покупок"], state["кэш"]))
+
+
+load_goals()
+if not state["цели"]:
+    read_goals()
+state["кэш"] = f.read_hud_cash()
+state["кэш_старт"] = state["кэш"]
+save()
+end = time.time() + MINUTES * 60
+while time.time() < end:
+    try:
+        circle()
+    except KeyboardInterrupt:
+        break
+    except Exception:                                       # noqa: BLE001
+        state["сбоев"] += 1
+        say("сбой круга: %s" % traceback.format_exc().splitlines()[-1])
+        try:
+            f.hand.release_all()
+        except Exception:                                   # noqa: BLE001
+            pass
+        time.sleep(3)
+    if state["кругов"] and state["кругов"] % 25 == 0:
+        read_goals()
+
+say("прогон окончен: кругов %d, локов %d, покупок %d, кэш %s -> %s, сбоев %d"
+    % (state["кругов"], state["локов"], state["покупок"],
+       state["кэш_старт"], state["кэш"], state["сбоев"]))
