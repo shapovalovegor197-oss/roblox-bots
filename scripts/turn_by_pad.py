@@ -31,7 +31,8 @@ def bearing():
 f.reset_to_base(); time.sleep(1.6)
 f.set_work_view()
 f.close_players_table()
-for units in (600, 1200, 2400):
+STEPS = [int(x) for x in sys.argv[1:]] or [600, 1200, 2400]
+for units in STEPS:
     b0 = bearing()
     if b0 is None:
         print("пад не опознан, пропускаю", flush=True); continue
