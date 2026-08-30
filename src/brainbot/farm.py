@@ -1889,7 +1889,7 @@ class Farmer:
                  px / w, py / h, share * 100, bearing)
         self.hand.pitch_normal(back=self.tuning.view_pitch_back, already_top=True)
         time.sleep(0.5)
-        self.hand.look(int(self.nav.full_turn * bearing / 360.0), 0)
+        self.hand.turn_degrees(bearing)
         time.sleep(0.6)
 
         # ЗДЕСЬ БЫЛА ДОВОРОТКА НА 180 по подписям внешнего мира — снята 30.08
@@ -2066,7 +2066,7 @@ class Farmer:
                  px / w, py / h, bearing, away)
         self.hand.pitch_normal(back=self.tuning.view_pitch_back, already_top=True)
         time.sleep(0.5)
-        self.hand.look(int(self.nav.full_turn * away / 360.0), 0)
+        self.hand.turn_degrees(away)
         time.sleep(0.8)
         return away
 

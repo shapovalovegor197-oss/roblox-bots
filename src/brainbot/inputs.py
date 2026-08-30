@@ -386,6 +386,31 @@ class Hand:
             time.sleep(0.06)
             pydirectinput.mouseUp(button="right")
 
+    # Поворот на УГОЛ. Одной протяжкой большой угол не берётся: замер 31.08 —
+    # 1748 единиц (по дневной формуле это 174 градуса) дают на деле 104, а те
+    # же 1748 четырьмя порциями — 115. Зато шагами по 437 единиц поворот идёт
+    # ровно: шесть шагов разворачивают спиной к базе, лицом на площадь
+    # (кадр turn6_check_20260831-001410), то есть примерно 29 градусов на шаг.
+    #
+    # Мелкие углы шагами не наберёшь, поэтому остаток докручивается короткой
+    # протяжкой по своей мере: 0.102 градуса на единицу (замер по сдвигу сцены
+    # при чувствительности клиента 1.0).
+    TURN_STEP_UNITS = 437
+    TURN_STEP_DEG = 29.0
+    SMALL_DEG_PER_UNIT = 0.102
+
+    def turn_degrees(self, deg: float) -> None:
+        """Повернуть камеру на угол в градусах. Знак: плюс — вправо."""
+        sign = 1 if deg >= 0 else -1
+        left = abs(float(deg))
+        while left >= self.TURN_STEP_DEG:
+            self.look(sign * self.TURN_STEP_UNITS, 0)
+            time.sleep(0.25)
+            left -= self.TURN_STEP_DEG
+        if left > 1.0:
+            self.look(int(sign * left / self.SMALL_DEG_PER_UNIT), 0)
+            time.sleep(0.15)
+
     def drag_look(self, x0: int, y0: int, x1: int, y1: int) -> None:
         """Тот же поворот, но АБСОЛЮТНЫМ протаскиванием курсора из точки в точку.
 
