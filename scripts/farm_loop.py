@@ -450,7 +450,52 @@ def maybe_rebirth(after_target: bool = False) -> None:
     read_goals()
 
 
+ACCOUNT = "raven"
+
+
+def client_alive() -> bool:
+    """Окно клиента ещё живо? Пустой список — Roblox закрыт или выбит."""
+    try:
+        return bool(enum_roblox_windows())
+    except Exception:                                       # noqa: BLE001
+        return False
+
+
+def revive_client() -> bool:
+    """Поднять клиент заново и пересобрать фермера на новое окно.
+
+    Без этой проверки бот не замечает пропажи окна и продолжает водить мышью
+    по рабочему столу: 31.08 клиент выбило (в игру вошли тем же аккаунтом с
+    ноутбука), а цикл ещё минуту слепо тыкал курсором, пока не сработала
+    защита pydirectinput от угла экрана. Ввод при этом уходил КУДА УГОДНО.
+    """
+    global f
+    say("окна клиента нет — поднимаю заново")
+    try:
+        from brainbot.session import Session                # noqa: PLC0415
+        from brainbot.mutex import SingletonMutex           # noqa: PLC0415
+        SingletonMutex().acquire()
+        session = Session(account=s.account(ACCOUNT), settings=s)
+        if not session.launch():
+            say("клиент не поднялся")
+            return False
+        win = session.window
+    except Exception as exc:                                # noqa: BLE001
+        say("поднять клиент не вышло: %s" % exc)
+        return False
+    f = Farmer(window=win, hand=Hand(win, s.input), tuning=FarmTuning(),
+               screens_dir=s.screenshots_dir)
+    f.allow_wipe = True
+    say("клиент поднят заново, hwnd=%s" % win.hwnd)
+    return True
+
+
 def circle() -> None:
+    if not client_alive():
+        if not revive_client():
+            state["сбоев"] += 1
+            time.sleep(30)
+            return
     if not f.ensure_connected():
         state["сбоев"] += 1
         say("клиент не вернулся в игру")
