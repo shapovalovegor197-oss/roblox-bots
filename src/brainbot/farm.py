@@ -3162,6 +3162,7 @@ class Farmer:
         self.close_players_table()
         self.dismiss_modals()
         before = (self.me() or {}).get("rebirths")
+        cash_before = self.read_hud_cash()
         # «Rebirth» OCR стабильно читает как «nebirth» — r превращается в n.
         # Поэтому ищем по куску «birth»: он выживает при любой такой подмене.
         if not self.open_menu_item("birth"):
@@ -3218,7 +3219,21 @@ class Farmer:
 
         after = (self.me() or {}).get("rebirths")
         ok = before is not None and after is not None and after > before
-        log.info("ребёрн: было %s, стало %s -> %s", before, after,
+        # Лидерборд читается не всегда (нужен Tab и свой ник в списке), и
+        # 31.08 в 11:14 перерождение ПРОШЛО, а бот его не засчитал: кэш упал с
+        # 57.72M до 25 000, лок вырос с 80 до 90 секунд — все признаки налицо,
+        # а `me()` вернул пусто. Поэтому второй, независимый признак:
+        # перерождение ОБНУЛЯЕТ деньги, и падение на порядок ни с чем не
+        # спутаешь.
+        cash_after = self.read_hud_cash()
+        wiped = (cash_before is not None and cash_after is not None
+                 and cash_before > 1e6 and cash_after < cash_before / 10.0)
+        if wiped and not ok:
+            log.info("ребёрн подтверждён обнулением денег: %.0f -> %.0f",
+                     cash_before, cash_after)
+        ok = ok or wiped
+        log.info("ребёрн: было %s, стало %s, деньги %s -> %s -> %s",
+                 before, after, cash_before, cash_after,
                  "получилось" if ok else "не подтвердилось")
         return ok
 
