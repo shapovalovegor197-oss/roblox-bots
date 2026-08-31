@@ -3,14 +3,16 @@ requests>=2.32
 numpy>=1.26
 opencv-python>=4.10
 mss>=9.0
-pydirectinput>=1.0.4
+pydirectinput-rgx>=2.1
 pywin32>=306
 
 # захват экрана быстрее mss (необязательно, но сильно быстрее)
 dxcam>=0.0.5
 
-# OCR — ставить, когда дойдём до чтения имён брейнротов
-# pytesseract>=0.3.13
+# OCR динамического текста (имена брейнротов, доход, наличные) через WinRT —
+# движок Windows, Tesseract не нужен. Требуется farm.py/ocr.py.
+Pillow>=10.0
+screen-ocr[winrt]>=0.5
 
 # WGC-захват окна по hwnd: снимает перекрытые окна
 zbl>=0.6

@@ -17,6 +17,34 @@ log = get("window")
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
+
+def _make_dpi_aware() -> None:
+    """Считать окна в ФИЗИЧЕСКИХ пикселях, как и WGC-захват.
+
+    Без этого при масштабе дисплея > 100% GetClientRect отдаёт логический
+    размер (1280x720), а захват — физический (1601x901 при 125%), и все доли
+    кадра промахиваются. На десктопе при 100% масштабе это no-op; на ноутбуке
+    с 125% — обязательно. Ставить ДО первого обращения к окнам, поэтому вызов
+    на импорте модуля.
+    """
+    try:  # Win10 1703+: per-monitor v2, самый честный режим
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except Exception:
+        pass
+    try:  # Win8.1+: PROCESS_PER_MONITOR_DPI_AWARE = 2
+        ctypes.WinDLL("shcore").SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:  # старый общий system-DPI-aware
+        user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+_make_dpi_aware()
+
 ROBLOX_CLASS = "WINDOWSCLIENT"
 ROBLOX_TITLE = "Roblox"
 
