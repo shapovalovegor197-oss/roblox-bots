@@ -116,6 +116,12 @@ def sane_cash(prev):
     if now is None or prev is None:
         return now
     dt = max(1.0, time.time() - _last_read[0])
+    # Ровно в сто раз больше — это потерянная десятичная точка, а не богатство:
+    # «$1.47M» читается как «$147M» (замер 31.08 17:41). Такое отбрасываем
+    # сразу, не тратя второе чтение.
+    if prev and 80 < now / max(prev, 1) < 130:
+        say("чтение денег отброшено (похоже на потерянную точку): %s при %s" % (now, prev))
+        return prev
     if now > prev + 20000 * dt + 50e6 or now < prev * 0.2:
         again = f.read_hud_cash()
         if again is None or again > prev + 20000 * dt or again < prev * 0.2:
@@ -326,7 +332,7 @@ def shopping(deadline_left) -> None:
     """Стоять у ленты и покупать, пока горит лок."""
     f.hand.move(13, 65)          # курсор в угол, чтобы не закрывал надписи
     f.shot("belt_shop")          # что именно перед носом, когда начали закуп
-    cash = f.read_hud_cash()
+    cash = sane_cash(state["кэш"]) or state["кэш"]
     note_cash(cash)
     if state["кэш_старт"] is None:
         state["кэш_старт"] = cash
@@ -381,7 +387,7 @@ def shopping(deadline_left) -> None:
             state["цели_куплены"].append(name)
             say("ЦЕЛЬ %s: удержание сделано, проверю ребёрном" % name)
             maybe_rebirth(after_target=True)
-            cash = f.read_hud_cash() or cash
+            cash = sane_cash(cash) or cash
             note_cash(cash)
             continue
         f.hand.interact(BUY_HOLD)
@@ -539,7 +545,11 @@ def circle() -> None:
         # Планка растёт вместе с кэшем, чтобы это шло само.
         side = -1 if state["кругов"] % 2 == 0 else 1
         before_pass = f.read_hud_cash()
-        if state["кругов"] % 3 == 2:
+        # Продажа — инструмент БОГАТОЙ фазы. Пока денег мало, слоты не узкое
+        # место: занять их нечем, и продавать только что купленную мелочь
+        # значит топтаться на месте. Порог 5 миллионов взят по факту: дорогие
+        # брейнроты (Gorillo $3M, Girafa $7.5M) начинаются примерно оттуда.
+        if state["кругов"] % 3 == 2 and (state["кэш"] or 0) >= 5e6:
             bar = max(MIN_INCOME, (state["кэш"] or 0) / 4000.0)
             say("проход с продажей: планка дохода %.0f/с" % bar)
             sold = f.sell_below(bar, side=side)
