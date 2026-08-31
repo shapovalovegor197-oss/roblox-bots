@@ -44,6 +44,7 @@ RESERVE_MIN = 20.0
 # Для цепочки ребёрнов нужны оба ОДНОВРЕМЕННО, поэтому держим базу запертой
 # плотнее, а у ленты стоим меньше.
 BELT_STAY = 35.0
+HOME_RESERVE = 40.0    # секунд лока, при которых пора домой запираться
 # Обычные покупки снова разрешены: сбор заработал (проход по ряду даёт
 # миллионы), значит доходный брейнрот опять окупается. Планку дохода держим
 # высокой — слотов восемь, и место нужно под цели ребёрна.
@@ -361,7 +362,11 @@ def shopping(deadline_left) -> None:
     # не сделать ни одного перерождения.
     t_belt = time.time()
     last_seen = [time.time(), 0]        # когда последний раз видели карточку, сколько шагов сделали
-    while time.time() - t_belt < BELT_STAY:
+    # Уходим, пока лок ЕЩЁ ДЕРЖИТ. Требование пользователя: дверь должна быть
+    # закрыта, у нас воруют почти всё. Дорога домой и запирание занимают около
+    # сорока секунд, поэтому при остатке меньше HOME_RESERVE закуп прекращаем,
+    # сколько бы времени ни оставалось от BELT_STAY.
+    while time.time() - t_belt < BELT_STAY and f.lock_left_now() > HOME_RESERVE:
         card = f.read_card()
         if not card["ready"]:
             # Промпта нет — либо между брейнротами на ленте, либо встали чуть
@@ -519,6 +524,38 @@ def revive_client() -> bool:
     return True
 
 
+def wait_at_plate() -> None:
+    """Дождаться истечения лока СТОЯ У ПЛИТЫ и запереть сразу же.
+
+    Требование пользователя: дверь должна быть закрыта, воруют почти всё.
+    Раньше бот ждал истечения где придётся, а потом шёл к плите — и дверь
+    стояла открытой всю дорогу (замер: 13 секунд). Запереть заранее нельзя,
+    игра отвечает «Your base is already locked!», поэтому единственный способ
+    сократить окно — быть на месте к моменту истечения.
+
+    Плита при действующем локе НЕ СВЕТИТСЯ, наводиться не на что: идём вслепую
+    по короткому маршруту от респавна, он же используется в локе.
+    """
+    left = f.lock_left_now()
+    say("жду у плиты, до истечения %d с" % left)
+    f.reset_to_base()
+    time.sleep(1.2)
+    f.set_work_view()
+    f.close_players_table()
+    f.face_base_from_top()
+    for _ in range(4):
+        f.hand.hold("w", 0.6)
+        time.sleep(0.2)
+    while f.lock_left_now() > 1:
+        time.sleep(0.4)
+    for _ in range(4):
+        f.hand.hold("w", 0.5)
+        time.sleep(0.25)
+        if f.lock_confirmed():
+            say("заперто сразу по истечении — дверь почти не открывалась")
+            return
+
+
 def circle() -> None:
     if not client_alive():
         if not revive_client():
@@ -531,8 +568,21 @@ def circle() -> None:
         time.sleep(30)
         return
 
+    # Осталось меньше полуминуты — идём ждать к плите, чтобы запереть в ту же
+    # секунду, как лок спадёт.
+    if 0 < f.lock_left_now() <= 30:
+        try:
+            wait_at_plate()
+        except Exception as exc:                            # noqa: BLE001
+            say("ожидание у плиты сорвалось: %s" % exc)
+
     if f.lock_left_now() <= 0:
         t0 = time.time()
+        # Сколько дверь простояла открытой: от истечения прошлого лока до
+        # начала этого. Число важнее всех прочих — пока база открыта, соседи
+        # уносят брейнротов, и именно из-за этого база пустеет.
+        opened_at = state.get("_лок_истёк") or t0
+        state["дверь_открыта_с"] = round(t0 - opened_at, 1)
         before = sane_cash(state["кэш"]) or state["кэш"]
         left = f.lock_with_retries(attempts=2)
         if not left:
@@ -596,8 +646,10 @@ def circle() -> None:
         if collected > 0:
             state["собрано_всего"] += collected
         note_cash(after)
-        say("заперто на %d с (за %.1f с), собрано %.0f, кэш %s"
-            % (left, time.time() - t0, collected, after))
+        state["_лок_истёк"] = time.time() + left
+        state.setdefault("дверь_открыта_история", []).append(state["дверь_открыта_с"])
+        say("заперто на %d с (за %.1f с), дверь была открыта %.1f с, собрано %.0f, кэш %s"
+            % (left, time.time() - t0, state["дверь_открыта_с"], collected, after))
 
     walked = goto_belt()
     if walked is None:
