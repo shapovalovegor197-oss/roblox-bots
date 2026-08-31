@@ -3075,8 +3075,17 @@ class Farmer:
             if name and name not in names:
                 names.append(name)
                 sats[name] = round(sat, 1)
+        # НЕ ХВАТАЕТ только тех, чья иконка ТЁМНАЯ. Насыщенность разводит это
+        # уверенно: замер на живом окне 31.08 — купленный Trulimero Trulicina
+        # даёт 200.0 (цветная иконка с зелёной галкой), некупленный
+        # Chimpanzini Bananini — 17.4 (силуэт). Раньше сюда шли ВСЕ имена
+        # подряд, насыщенность только писалась в отчёт, и ребёрн не мог
+        # состояться ни при каком раскладе: список требований никогда не
+        # пустел.
+        missing = [n for n in names if sats.get(n, 0.0) < 60.0]
         return {"have_cash": have, "need_cash": need_cash,
-                "need_items": names, "item_saturation": sats, "lines": lines}
+                "need_items": missing, "items_all": names,
+                "item_saturation": sats, "lines": lines}
 
     def rebirth(self) -> bool:
         """Сделать перерождение, если требования выполнены.
@@ -3122,14 +3131,16 @@ class Farmer:
         # подтверждение жалось вслепую. Для действия, которое ОБНУЛЯЕТ базу, это
         # недопустимо: если игра вдруг не потребует предметов, всё стоящее на
         # плоту пропадёт молча.
+        # `need_items` — это уже СПИСОК НЕДОСТАЮЩИХ: окно рисует купленное
+        # цветной иконкой с галкой, некупленное — тёмным силуэтом, и
+        # насыщенность разводит их уверенно (200.0 против 17.4). Сверять это
+        # ещё и по подписям на базе не нужно: там OCR путается, а окно —
+        # источник первой руки.
         if info["need_items"]:
-            have_items = self.base_items()
-            missing = [n for n in info["need_items"] if n not in have_items]
-            if missing:
-                log.info("рано: в окне требуются %s, на базе есть %s, не хватает %s",
-                         info["need_items"], have_items or "пусто", missing)
-                self.dismiss_modals()
-                return False
+            log.info("рано: не хватает %s (в окне: %s)",
+                     info["need_items"], info.get("items_all"))
+            self.dismiss_modals()
+            return False
 
         # Последняя развилка перед необратимым. Всё, что стоит на плоту, ребёрн
         # сотрёт; сначала это надо унести складу (scenarios/steal.py).
