@@ -1773,6 +1773,32 @@ class Farmer:
             log.info("продано за проход: %s", sold)
         return sold
 
+    def collect_back_from_plate(self, steps: int = 5) -> float:
+        """Собрать деньги ПОСЛЕ запирания: змейкой обратно от плиты к выходу.
+
+        Порядок важнее маршрута. Пока сбор шёл ДО лока, база стояла открытой
+        всю дорогу — а именно в это время её и обворовывают (замер 31.08:
+        дверь открыта 21.3 с вместо нуля, и брейнротов снова унесли).
+
+        После лока бот стоит на плите в глубине базы, то есть уже прошёл ряды
+        насквозь. Возвращаемся тем же путём, качаясь стрейфом: деньги берутся
+        наступанием на пады, а между рядами можно пройти, ничего не задев.
+        Ориентир не нужен — идём назад по своим следам, и база при этом заперта.
+        """
+        before = self.read_hud_cash()
+        for i in range(steps):
+            self.hand.hold("s", 0.6)
+            time.sleep(0.15)
+            self.hand.hold("a" if i % 2 == 0 else "d", 0.7)
+            time.sleep(0.15)
+        after = self.read_hud_cash()
+        if before is not None and after is not None and after > before:
+            gain = after - before
+            log.info("собрано на обратном пути: %.0f (стало %.0f)", gain, after)
+            return gain
+        log.info("обратный проход не дал прироста (было %s, стало %s)", before, after)
+        return 0.0
+
     def collect_rows(self, side: int = -1) -> float:
         """Собрать деньги: пройти вглубь базы змейкой, наводясь по ПЛИТЕ.
 
