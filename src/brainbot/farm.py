@@ -1710,6 +1710,59 @@ class Farmer:
         log.info("падами собрать не вышло (было %s, стало %s)", before, after)
         return 0.0
 
+    def row_offer(self, frame=None) -> tuple[str | None, bool]:
+        """Что предлагает промпт прямо сейчас: (имя брейнрота, есть ли Sell).
+
+        У каждого брейнрота на базе два промпта — «E Grab» и «F Sell: $N».
+        Имя берём с карточки над ним, а справочник знает точный доход.
+        """
+        fr = self.frame() if frame is None else frame
+        lines = ocr.lines(fr)
+        has_sell = any("sell" in t.lower() and len(t.strip()) <= 24
+                       for t, _, _ in lines)
+        item = catalog().match_any([t for t, _, _ in lines])
+        return (item.name if item else None), has_sell
+
+    def sell_below(self, bar: float, side: int = -1, steps: int = 8) -> list[str]:
+        """Пройти ряд и продать всех, чей доход НИЖЕ планки. Список проданных.
+
+        Смысл — раскрутка баланса, идея пользователя: пока денег мало, берём
+        дешёвых, а как накопили — освобождаем под них слоты и ставим дороже.
+        Слотов восемь, поэтому дешёвый брейнрот со временем превращается в
+        тормоз: он занимает место, которое стоило бы отдать под тысячи в
+        секунду.
+
+        Ходим тем же проходом, что и сбор: от известного нуля довернуть к ряду
+        и идти вглубь, — он уже отлажен и деньги по дороге тоже соберутся.
+        """
+        sold = []
+        if self.face_base_from_top() is None:
+            log.info("продажа: известного нуля нет, пропускаю")
+            return sold
+        self.hand.turn_degrees(35 * (1 if side > 0 else -1))
+        time.sleep(0.4)
+        cat = catalog()
+        for _ in range(steps):
+            self.hand.hold("w", 0.6)
+            time.sleep(0.25)
+            name, has_sell = self.row_offer()
+            if not has_sell or not name or name in sold:
+                continue
+            item = cat.get(name) if hasattr(cat, "get") else None
+            income = getattr(item, "base_income", None) if item else None
+            if income is None:
+                hit = cat.match(name)
+                income = getattr(hit, "base_income", None) if hit else None
+            if income is None or income >= bar:
+                continue
+            log.info("продаю %s (доход %s < планки %.0f)", name, income, bar)
+            self.hand.press("f")
+            time.sleep(0.9)
+            sold.append(name)
+        if sold:
+            log.info("продано за проход: %s", sold)
+        return sold
+
     def collect_rows(self, side: int = -1) -> float:
         """Собрать деньги с ряда брейнротов. side: -1 левый, +1 правый.
 
