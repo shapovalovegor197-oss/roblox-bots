@@ -2795,7 +2795,14 @@ class Farmer:
         справочнике, а там эти поля точные. OCR ошибается, справочник — нет.
         """
         lines = ocr.lines(self.frame())
-        prompt = next(((t, x, y) for t, x, y in lines if t.strip() == "purchase"), None)
+        # Не точное равенство, а вхождение в КОРОТКОЙ строке. Точное равенство
+        # ломается от любого мусора рядом («purchase.», «e purchase»), и в
+        # прогоне 03:20–03:35 бот стоял у ленты пять кругов подряд, ни разу не
+        # прочитав карточку: at_belt видел «purchase» вхождением, а read_card
+        # требовал равенства. Ограничение по длине отсекает подсказки чата, где
+        # это слово встречается в предложении.
+        prompt = next(((t, x, y) for t, x, y in lines
+                       if "purchase" in t.lower() and len(t.strip()) <= 24), None)
         if not prompt:
             return {"item": None, "name": None, "price": None, "rarity": None,
                     "income": None, "ready": False}
