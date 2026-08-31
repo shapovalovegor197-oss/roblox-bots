@@ -1756,7 +1756,10 @@ class Farmer:
             if income is None or income >= bar:
                 continue
             log.info("продаю %s (доход %s < планки %.0f)", name, income, bar)
-            self.hand.press("f")
+            # С УДЕРЖАНИЕМ. Нажатие нулевой длины игра теряет — на этом уже
+            # горели покупки: промпт «E Purchase» не засчитывался, пока не
+            # стали держать клавишу. Продажа устроена так же.
+            self.hand.hold("f", 1.2)
             time.sleep(0.9)
             sold.append(name)
         if sold:
