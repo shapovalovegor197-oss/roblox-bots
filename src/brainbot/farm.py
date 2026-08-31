@@ -2870,7 +2870,11 @@ class Farmer:
         above = [(t, x, y) for t, x, y in lines
                  if 0 < py - y < 120 and abs(x - px) < 340]
         above.sort(key=lambda r: py - r[2])
-        texts = [t for t, _, _ in above]
+        # Строку САМОГО промпта тоже отдаём справочнику: OCR часто склеивает
+        # имя и слово Purchase в одну строку («gangster footera $4k purchase»),
+        # и тогда «строк выше» просто нет — карточка читалась как безымянная
+        # с одной ценой (прогон 08:05, четыре подряд).
+        texts = [prompt[0]] + [t for t, _, _ in above]
         item = catalog().match_any(texts) if texts else None
         text = texts[0] if texts else ""
         price = None
@@ -2880,6 +2884,7 @@ class Farmer:
                 if price:
                     break
         if item is None:
+            log.info("карточка без имени, строки: %s", texts[:5])
             # Имя в промпте написано мелким СЕРЫМ по серому, и в общем проходе
             # OCR его не видит вовсе — в кадр попадает только контрастная цена.
             # Проверено на живой игре: при промпте «Lirilì Larilà $250» читался
