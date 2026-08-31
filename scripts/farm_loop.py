@@ -196,40 +196,34 @@ def at_belt() -> bool:
     return "purchase" in " ".join(x.lower() for x, _, _ in ocr.lines(f.frame()))
 
 
-def goto_belt(max_steps: int = 10, tries: int = 4) -> float | None:
+def goto_belt(max_steps: int = 12, tries: int = 4) -> float | None:
     """Из базы к ленте. Возвращает секунды пути либо None.
 
-    Разворот на полкруга с первого раза не попадает: длинную протяжку игра
-    берёт не целиком, а какую именно долю — зависит от чувствительности
-    клиента, которую двигает человек. Замер 31.08: заказ 175 градусов дал на
-    деле около 90, и бот уходил вдоль базы.
+    Разворота на полкруга здесь НЕТ, и это главное. Замер 31.08: от точки
+    респавна семь шагов ВПЕРЁД выводят прямо к ленте — в кадре промпт
+    «Gangster Footera $4K — E Purchase» (near_rot_20260831-030631). Прежняя
+    модель «респавн смотрит внутрь базы, лента строго позади» неверна, и
+    из-за неё бот разворачивался на 175 градусов и уходил вдоль базы; за ночь
+    это стоило всех кругов подряд с «до ленты не дошёл».
 
-    Поэтому калибровке тут не верим, а ДОВОРАЧИВАЕМ: не нашли ленту за проход —
-    добавили полсотни градусов и пошли снова. Респавн делаем только перед
-    первой попыткой, иначе каждый доворот терялся бы.
+    Если за проход ленты нет — доворачиваем веером на 35 градусов и идём
+    снова: так перебираются направления вокруг, не полагаясь на калибровку.
     """
     t = time.time()
+    f.reset_to_base()
+    time.sleep(1.2)
+    f.set_work_view()
+    f.close_players_table()
     for attempt in range(tries):
-        if attempt == 0:
-            f.reset_to_base()
-            time.sleep(1.2)
-            f.set_work_view()
-            f.close_players_table()
-            if f.face_belt_from_top() is None:
-                say("пад сверху не опознан — иду к ленте вслепую, полкруга назад")
-                f.hand.turn_degrees(175)
-            # Кадр сразу после разворота: если до ленты не дойдём, по нему
-            # видно, куда бот вообще смотрел.
-            f.shot("belt_turned")
-        else:
-            f.hand.turn_degrees(50)
+        if attempt:
+            f.hand.turn_degrees(35)
             time.sleep(0.3)
         for _ in range(max_steps):
             f.hand.hold("w", 0.6)
-            time.sleep(0.25)
+            time.sleep(0.22)
             if at_belt():
                 return time.time() - t
-        f.shot("belt_walked_%d" % attempt)
+        f.shot("belt_miss_%d" % attempt)
     return None
 
 

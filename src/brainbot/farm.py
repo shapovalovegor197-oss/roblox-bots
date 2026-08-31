@@ -1613,6 +1613,96 @@ class Farmer:
             out.append((fx, fy))
         return out
 
+    # Зелень пада: тот же диапазон, что у надписи наличных, но по площади это
+    # крупное пятно, а не строка.
+    PAD_HSV = ((35, 120, 120), (85, 255, 255))
+
+    def green_pads(self, frame=None) -> list[tuple[float, float, int]]:
+        """Зелёные пады сбора в кадре: (x, y, площадь) в долях кадра.
+
+        Пады — плоские прямоугольники у каждого брейнрота, деньги берутся
+        НАСТУПАНИЕМ. Слепой проход по рядам их не задевает: замер 31.08 —
+        четыре шага вглубь и стрейфы по 2.5 и 5 секунд дали ноль, зато вынесли
+        персонажа из базы в щель между стенами.
+
+        Отсекаем верх кадра (там трава соседних баз и мира) и берём пятна
+        шире, чем выше: пад в перспективе всегда вытянут поперёк.
+        """
+        fr = self.frame() if frame is None else frame
+        h, w = fr.shape[:2]
+        hsv = cv2.cvtColor(fr, cv2.COLOR_BGR2HSV)
+        lo, hi = self.PAD_HSV
+        mask = cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
+        # Верх режем скупо: дальние пады с деньгами лежат высоко в кадре
+        # (замер 31.08: «Collect $10.9M» на y около 0.28), и прежняя отсечка по
+        # 0.35 выбрасывала ровно их, оставляя пустые пады под ногами.
+        mask[: int(h * 0.20), :] = 0
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))
+        n, _lab, st, cen = cv2.connectedComponentsWithStats(mask, 8)
+        out = []
+        for i in range(1, n):
+            area = int(st[i, cv2.CC_STAT_AREA])
+            bw, bh = int(st[i, cv2.CC_STAT_WIDTH]), int(st[i, cv2.CC_STAT_HEIGHT])
+            if area < 1200 or bh == 0 or bw < bh:
+                continue
+            cx, cy = cen[i]
+            out.append((cx / w, cy / h, area))
+        out.sort(key=lambda p: p[1])           # ДАЛЬНИЕ (выше в кадре) первыми
+        return out
+
+    def collect_by_pads(self, budget: float = 40.0) -> float:
+        """Собрать деньги, НАВОДЯСЬ на каждый зелёный пад и наступая на него.
+
+        Слепые проходы по рядам не работают (см. green_pads), а подписи
+        «Collect $N» мелкие и читаются не всегда. Зато сам пад — крупное
+        зелёное пятно, его видно всегда, и приём тот же, что у плиты лока:
+        довернуть по горизонтали, шагнуть, повторить.
+
+        Возвращает прирост наличных за отведённые секунды.
+        """
+        before = self.read_hud_cash()
+        end = time.time() + budget
+        seen_none = 0
+        while time.time() < end:
+            fr = self.frame()
+            pads = self.green_pads(fr)
+            if not pads:
+                seen_none += 1
+                if seen_none > 3:
+                    log.info("падов в кадре нет — осматриваюсь")
+                    self.hand.turn_degrees(45)
+                    time.sleep(0.4)
+                    seen_none = 0
+                    continue
+                self.hand.hold("w", 0.4)
+                time.sleep(0.2)
+                continue
+            seen_none = 0
+            # Цель — САМЫЙ ДАЛЬНИЙ пад: деньги лежат на брейнротах в глубине
+            # базы, а под ногами пады пустые. Дойдя до дальнего, мы проходим
+            # по всем промежуточным.
+            x, y, area = pads[0]
+            off = x - 0.5
+            # Пад под ногами — он занимает низ кадра и уже не цель.
+            if y > 0.88 and area > 40000:
+                self.hand.hold("w", 0.45)
+                time.sleep(0.2)
+                continue
+            if abs(off) > 0.06:
+                # доли кадра -> градусы через горизонтальный угол обзора
+                self.hand.turn_degrees(off * 102.0)
+                time.sleep(0.25)
+                continue
+            self.hand.hold("w", 0.5)
+            time.sleep(0.25)
+        after = self.read_hud_cash()
+        if before is not None and after is not None and after > before:
+            gain = after - before
+            log.info("собрано падами %.0f (стало %.0f)", gain, after)
+            return gain
+        log.info("падами собрать не вышло (было %s, стало %s)", before, after)
+        return 0.0
+
     def collect_money(self, rows: int = 3, attempts: int = 2) -> float:
         """Собрать накопленное: пройти ПОПЕРЁК рядов зелёных падов.
 
