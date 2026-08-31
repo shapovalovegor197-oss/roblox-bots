@@ -1954,12 +1954,24 @@ class Farmer:
                         np.array((90, 255, 255), np.uint8))
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((11, 11), np.uint8))
         n, _lab, st, cent = cv2.connectedComponentsWithStats(m, 8)
-        best, best_area = None, 0
+        # Берём не самое крупное пятно, а САМОЕ БЛИЖНЕЕ к центру кадра. В виде
+        # сверху камера смотрит на персонажа, значит наш пад — под ним, у
+        # середины. Днём земля зелёная, и «самое крупное» стало выбирать то
+        # лужайку, то пад соседней базы: пеленги полетели на +69, +96, -97
+        # градусов, лок перестал выходить (прогон 04:28-04:33).
+        best, best_d = None, 1e9
         for i in range(1, n):
             a = int(st[i, cv2.CC_STAT_AREA])
             share = a / float(h * w)
-            if 0.03 <= share <= 0.40 and a > best_area:
-                best, best_area = (float(cent[i][0]), float(cent[i][1]), share), a
+            if not (0.03 <= share <= 0.40):
+                continue
+            cx, cy = float(cent[i][0]), float(cent[i][1])
+            d = ((cx - w / 2.0) / w) ** 2 + ((cy - h / 2.0) / h) ** 2
+            if d < best_d:
+                best, best_d = (cx, cy, share), d
+        # Слишком далеко от центра — это не наш пад, а чужой или трава.
+        if best is not None and best_d ** 0.5 > 0.32:
+            return None
         return best
 
     def plate_glow(self, frame) -> tuple[float, float, int] | None:
