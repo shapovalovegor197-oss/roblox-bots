@@ -254,6 +254,14 @@ def worth_buying(item, price) -> tuple[bool, str]:
     want = {normalize(n) for n in state["цели"]}
     if normalize(item.name) in want:
         return True, "ЦЕЛЬ"
+    # НЕ проедать порог перерождения. Цель прогона — цепочка ребёрнов, а для
+    # каждого нужны деньги ($12.5M на первом). Доходные брейнроты стоят
+    # миллионы: два подряд увели кэш с 35.4 до 24.9, и ещё пара оставила бы
+    # бота без ребёрна. Держим требование плюс четверть сверху.
+    need = state["нужно_денег"] or 0
+    cash = state["кэш"] or 0
+    if need and price and cash - price < need * 1.25:
+        return False, "не проедаю порог ребёрна"
     income = item.base_income or 0
     if income < MIN_INCOME:
         return False, "доход %s" % income
