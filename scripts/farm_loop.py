@@ -194,6 +194,25 @@ def read_goals() -> None:
         say("цели прочитать не вышло: %s" % exc)
 
 
+def on_belt() -> bool:
+    """Лента ПОД НОГАМИ: низ кадра залит синим полотном конвейера.
+
+    Промпт «Purchase» появляется, только пока рядом едет брейнрот, — по нему
+    нельзя понять, дошли ли мы. А полотно под ногами есть всегда. Замер по
+    кадрам 31.08: стоя на ленте — 0.98, на траве у чужой базы — 0.00, на
+    площади — 0.15, на своей дорожке внутри базы — 0.69. Порог 0.8 отделяет
+    ленту от собственной дорожки с запасом.
+    """
+    fr = f.frame()
+    h, w = fr.shape[:2]
+    band = fr[int(h * 0.72):int(h * 0.95), int(w * 0.33):int(w * 0.67)]
+    import cv2, numpy as np
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    m = cv2.inRange(hsv, np.array((100, 120, 90), np.uint8),
+                    np.array((130, 255, 255), np.uint8))
+    return float(m.mean()) / 255.0 > 0.8
+
+
 def at_belt() -> bool:
     """Мы ВПЛОТНУЮ у ленты: в кадре сам промпт покупки, а не слово где угодно.
 
@@ -206,19 +225,16 @@ def at_belt() -> bool:
                for t, _, _ in ocr.lines(f.frame()))
 
 
-def goto_belt(max_steps: int = 12, tries: int = 3) -> float | None:
-    """Из базы к ленте. Возвращает секунды пути либо None.
+def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
+    """Выйти из базы к ленте и ВСТАТЬ. Возвращает секунды пути.
 
-    Ключ, стоивший ночи: **респавн НЕ сбрасывает поворот камеры**. «Вперёд»
-    после респавна означает каждый раз разное — куда камеру оставило прошлое
-    действие. Отсюда и «до ленты не дошёл» кругами: бот считал, что стоит
-    лицом внутрь базы, а стоял как придётся.
+    Раньше дорога считалась пройденной только когда в кадре появлялся промпт
+    «Purchase». Но промпт есть лишь пока рядом едет брейнрот: лента движется,
+    и ждать его надо СТОЯ у ленты, а не в пути. Бот же продолжал идти и
+    уходил мимо ленты на площадь к Trade Plaza (кадр belt_miss_2 06:40).
 
-    Поэтому порядок такой:
-      1. встать в ИЗВЕСТНЫЙ ноль — лицом к базе, по пеленгу пада сверху;
-      2. отвернуться, проверяя КАДРОМ, а не калибровкой: пока в кадре промпт
-         «Allow Friends» или подписи базы, мы всё ещё смотрим внутрь;
-      3. идти вперёд, проверяя промпт «Purchase» на каждом шаге.
+    Теперь: встать в известный ноль, отвернуться от базы (проверяя кадром),
+    пройти пять шагов наружу — и всё, дальше ждёт закуп.
     """
     t = time.time()
     f.reset_to_base()
@@ -227,24 +243,20 @@ def goto_belt(max_steps: int = 12, tries: int = 3) -> float | None:
     f.close_players_table()
     if f.face_base_from_top() is None:
         say("пад сверху не опознан — известного нуля нет")
-    # Отворачиваемся от базы шагами, пока кадр не скажет «я снаружи».
-    for i in range(7):
+    for _ in range(7):
         fr = f.frame()
         if not f.inside_base(fr) and f.looking_outside(fr):
             break
         f.hand.turn_degrees(45)
         time.sleep(0.35)
-    f.shot("belt_faced")
-    for attempt in range(tries):
-        if attempt:
-            f.hand.turn_degrees(30)
-            time.sleep(0.3)
-        for _ in range(max_steps):
-            f.hand.hold("w", 0.6)
-            time.sleep(0.22)
-            if at_belt():
-                return time.time() - t
-        f.shot("belt_miss_%d" % attempt)
+    for i in range(max_steps):
+        f.hand.hold("w", 0.6)
+        time.sleep(0.22)
+        if at_belt() or on_belt():
+            say("на ленте на %d-м шаге" % (i + 1))
+            f.shot("belt_stand")
+            return time.time() - t
+    f.shot("belt_stand_miss")
     return None
 
 
@@ -308,11 +320,22 @@ def shopping(deadline_left) -> None:
     # всё равно СТИРАЕТ базу: стеречь на ней нечего, а не купить цель — значит
     # не сделать ни одного перерождения.
     t_belt = time.time()
+    last_seen = [time.time(), 0]        # когда последний раз видели карточку, сколько шагов сделали
     while time.time() - t_belt < BELT_STAY:
         card = f.read_card()
         if not card["ready"]:
+            # Промпта нет — либо между брейнротами на ленте, либо встали чуть
+            # в стороне. Долго пусто — делаем шаг вперёд, но не больше трёх:
+            # дальше начинается площадь, и оттуда лента уже не видна.
             time.sleep(0.2)
+            if time.time() - last_seen[0] > 15 and last_seen[1] < 3:
+                f.hand.hold("w", 0.5)
+                time.sleep(0.3)
+                last_seen[0] = time.time()
+                last_seen[1] += 1
+                say("у ленты пусто 15 с — шаг вперёд (%d из 3)" % last_seen[1])
             continue
+        last_seen[0] = time.time()
         item = card.get("item")
         if item is None:
             say("карточка: имя не опознано, цена %s" % card.get("price"))
