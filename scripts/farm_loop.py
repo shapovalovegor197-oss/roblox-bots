@@ -308,8 +308,22 @@ def worth_buying(item, price) -> tuple[bool, str]:
     if need and price and cash >= need * 1.25 and cash - price < need * 1.25:
         return False, "не проедаю порог ребёрна"
     income = item.base_income or 0
-    if income < MIN_INCOME:
-        return False, "доход %s" % income
+    # Планка дохода РАСТЁТ вместе с кэшем — лестница на уровне покупки.
+    # Слотов восемь, и брейнрот за 3 доллара в секунду занимает место, которое
+    # завтра стоило бы отдать под тысячи. Замер 31.08: с плоской планкой бот
+    # за два круга купил двенадцать штук по 3-35/с (одного и того же трижды),
+    # суммарный доход около сотни в секунду — против требования в 35 миллионов
+    # это ничто.
+    #
+    # cash/20000: при 600 тысячах берём от 30/с, при 5 миллионах — от 250/с,
+    # при 35 миллионах — от 1750/с.
+    floor = max(MIN_INCOME, (state["кэш"] or 0) / 20000.0)
+    if income < floor:
+        return False, "доход %s меньше планки %.0f" % (income, floor)
+    # Дубликаты не берём: тот же брейнрот занимает второй слот, а слотов
+    # восемь. Лучше подождать лучшего.
+    if item.name in state["куплено"]:
+        return False, "такой уже есть"
     if price and income and price / income > PAYBACK_SEC:
         return False, "окупается %.0f с" % (price / income)
     return True, "доход %s/с" % income
