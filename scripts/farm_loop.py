@@ -569,6 +569,43 @@ def wait_at_plate() -> None:
             return
 
 
+# Порядок работы, как его сформулировал пользователь: «закрыть — сбор —
+# закрыть — сбор — закрыть — закуп — закрыть — продажа». Дверь закрывается
+# ПЕРЕД каждым действием, а не раз в круг: пока база открыта, у нас уносят
+# брейнротов, и это дороже любой упущенной покупки.
+ДЕЙСТВИЯ = ["сбор", "сбор", "лента", "сбор", "продажа"]
+СТОИМОСТЬ = {"сбор": 25.0, "лента": 55.0, "продажа": 35.0}
+
+
+def ensure_locked() -> bool:
+    """Дверь закрыта? Если нет — закрыть, и только потом что-то делать."""
+    left = f.lock_left_now()
+    if left > 5:
+        return True
+    if 0 < left <= 30:
+        try:
+            wait_at_plate()
+        except Exception as exc:                            # noqa: BLE001
+            say("ожидание у плиты сорвалось: %s" % exc)
+    if f.lock_left_now() > 5:
+        return True
+    t0 = time.time()
+    opened_at = state.get("_лок_истёк") or t0
+    state["дверь_открыта_с"] = max(0.0, round(t0 - opened_at, 1))
+    left = f.lock_with_retries(attempts=2)
+    if not left:
+        state["сбоев"] += 1
+        say("лок не вышел за %.1f с" % (time.time() - t0))
+        return False
+    state["локов"] += 1
+    state["локи_секунд"].append(round(time.time() - t0, 1))
+    state["_лок_истёк"] = time.time() + left
+    state.setdefault("дверь_открыта_история", []).append(state["дверь_открыта_с"])
+    say("ЗАПЕРТО на %d с (за %.1f с), дверь была открыта %.1f с"
+        % (left, time.time() - t0, state["дверь_открыта_с"]))
+    return True
+
+
 def circle() -> None:
     if not client_alive():
         if not revive_client():
@@ -581,77 +618,48 @@ def circle() -> None:
         time.sleep(30)
         return
 
-    # Осталось меньше полуминуты — идём ждать к плите, чтобы запереть в ту же
-    # секунду, как лок спадёт.
-    if 0 < f.lock_left_now() <= 30:
-        try:
-            wait_at_plate()
-        except Exception as exc:                            # noqa: BLE001
-            say("ожидание у плиты сорвалось: %s" % exc)
-
-    if f.lock_left_now() <= 0:
-        t0 = time.time()
-        # Сколько дверь простояла открытой: от истечения прошлого лока до
-        # начала этого. Число важнее всех прочих — пока база открыта, соседи
-        # уносят брейнротов, и именно из-за этого база пустеет.
-        opened_at = state.get("_лок_истёк") or t0
-        state["дверь_открыта_с"] = max(0.0, round(t0 - opened_at, 1))
-        before = sane_cash(state["кэш"]) or state["кэш"]
-        left = f.lock_with_retries(attempts=2)
-        if not left:
-            state["сбоев"] += 1
-            say("лок не вышел за %.1f с" % (time.time() - t0))
-            return
-        state["локов"] += 1
-        state["локи_секунд"].append(round(time.time() - t0, 1))
-        # Дорога к плите идёт мимо брейнротов, а деньги забираются проходом —
-        # значит лок ЗАОДНО и собирает. Проверяем это числом, а не верой: если
-        # прирост нулевой, делаем отдельный проход.
-        # Сбор — отдельным проходом, ВСЕГДА. Дорога к плите идёт по центру и
-        # брейнротов не задевает: замерено, проход по центру дал ноль, а проход
-        # от пада внутрь — +$703 000.
-        # Сбор — через круг. Он стоит 40-45 секунд из 80-секундного окна лока,
-        # и если делать его каждый раз, у ленты остаётся полминуты — мало,
-        # чтобы дождаться нужного брейнрота. Деньги за пропущенный круг никуда
-        # не денутся: они копятся на самих брейнротах.
-        # СБОР ТОЛЬКО ПОСЛЕ ЗАПИРАНИЯ. Пока он шёл до лока, база стояла
-        # открытой всю дорогу сбора, и брейнротов уносили — дверь была открыта
-        # 21.3 секунды вместо нуля. Теперь бот запер базу, стоит на плите в
-        # глубине и возвращается к выходу змейкой: ряды пройдены, база заперта.
-        collected = f.collect_back_from_plate()
-        if state["кругов"] % 3 == 2 and (state["кэш"] or 0) >= 5e6:
-            bar = max(MIN_INCOME, (state["кэш"] or 0) / 20000.0)
-            say("проход с продажей: планка дохода %.0f/с" % bar)
-            sold = f.sell_below(bar, side=state.get("ряд", -1))
-            if sold:
-                state["продано"] = state.get("продано", 0) + len(sold)
-                state.setdefault("продано_кого", []).extend(sold)
-        after = sane_cash(before) or before
-        if collected > 0:
-            state["собрано_всего"] += collected
-        note_cash(after)
-        state["_лок_истёк"] = time.time() + left
-        state.setdefault("дверь_открыта_история", []).append(state["дверь_открыта_с"])
-        say("заперто на %d с (за %.1f с), дверь была открыта %.1f с, собрано %.0f, кэш %s"
-            % (left, time.time() - t0, state["дверь_открыта_с"], collected, after))
-
-    walked = goto_belt()
-    if walked is None:
-        state["сбоев"] += 1
-        f.shot("fail_belt")
-        say("до ленты не дошёл")
+    # 1. Дверь. Всегда первым делом.
+    if not ensure_locked():
         return
-    bought_target = len(state["цели_куплены"])
-    shopping(f.lock_left_now)
-    # Купили цель — идём на ребёрн НЕМЕДЛЕННО: база открыта между локами, и
-    # соседи воруют. Именно из-за краж база и пустеет.
-    if len(state["цели_куплены"]) > bought_target:
-        maybe_rebirth(after_target=True)
-    elif state["кругов"] % 3 == 0:
-        maybe_rebirth()
+
+    # 2. Одно действие — и только если на него хватит запертого времени.
+    act = ДЕЙСТВИЯ[state["кругов"] % len(ДЕЙСТВИЯ)]
+    left = f.lock_left_now()
+    if left < СТОИМОСТЬ[act]:
+        say("на «%s» нужно %.0f с, лока осталось %.0f — жду следующего замка"
+            % (act, СТОИМОСТЬ[act], left))
+        state["кругов"] += 1
+        time.sleep(min(left + 1, 20))
+        return
+
+    before = state["кэш"]
+    if act == "сбор":
+        gain = f.collect_back_from_plate()
+        if gain:
+            state["собрано_всего"] += gain
+        say("сбор: +%.0f" % gain)
+    elif act == "продажа":
+        bar = max(MIN_INCOME, (state["кэш"] or 0) / 20000.0)
+        say("продажа: планка дохода %.0f/с" % bar)
+        sold = f.sell_below(bar, side=state.get("ряд", -1))
+        if sold:
+            state["продано"] = state.get("продано", 0) + len(sold)
+            state.setdefault("продано_кого", []).extend(sold)
+    elif act == "лента":
+        walked = goto_belt()
+        if walked is None:
+            state["сбоев"] += 1
+            f.shot("fail_belt")
+            say("до ленты не дошёл")
+        else:
+            shopping(f.lock_left_now)
+
+    note_cash(sane_cash(before) or before)
+    maybe_rebirth()
     state["кругов"] += 1
-    say("круг %d закрыт: покупок всего %d, кэш %s"
-        % (state["кругов"], state["покупок"], state["кэш"]))
+    say("круг %d (%s): покупок %d, ребёрнов %d, кэш %s"
+        % (state["кругов"], act, state["покупок"], state["ребёрнов"], state["кэш"]))
+
 
 
 # Мера поворота — своим замером, а не числом из кода: ползунок
