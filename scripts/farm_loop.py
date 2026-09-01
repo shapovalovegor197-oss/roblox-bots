@@ -245,6 +245,38 @@ def on_belt() -> bool:
     return float(m.mean()) / 255.0 > 0.8
 
 
+def step_onto_belt(tries: int = 7) -> bool:
+    """Доступить НА полотно ленты, видя его в кадре.
+
+    Бот выходил из базы и вставал впритык к ленте, но не на неё: полотно было
+    в двух шагах слева, поэтому ни промпта, ни синевы под ногами (кадр
+    belt_stand_miss_20260901-033024). Правим по картинке — находим синюю
+    полосу в нижней половине кадра и подходим к её середине.
+    """
+    import cv2, numpy as np
+    for _ in range(tries):
+        if on_belt() or at_belt():
+            return True
+        fr = f.frame()
+        h, w = fr.shape[:2]
+        band = fr[int(h * 0.55):int(h * 0.95), :]
+        hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+        m = cv2.inRange(hsv, np.array((100, 120, 90), np.uint8),
+                        np.array((130, 255, 255), np.uint8))
+        cols = m.sum(axis=0).astype(float)
+        if cols.sum() < 255 * 50:
+            return False
+        cx = float((cols * np.arange(w)).sum() / cols.sum()) / w
+        off = cx - 0.5
+        if abs(off) > 0.08:
+            f.hand.hold("d" if off > 0 else "a", min(0.45, abs(off) * 1.2))
+            time.sleep(0.15)
+        else:
+            f.hand.hold("w", 0.45)
+            time.sleep(0.15)
+    return on_belt() or at_belt()
+
+
 def at_belt() -> bool:
     """Мы ВПЛОТНУЮ у ленты: в кадре сам промпт покупки, а не слово где угодно.
 
@@ -288,6 +320,11 @@ def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
             say("на ленте на %d-м шаге" % (i + 1))
             f.shot("belt_stand")
             return time.time() - t
+    # Рядом, но не на полотне — доступаем по картинке.
+    if step_onto_belt():
+        say("доступил на ленту по синеве")
+        f.shot("belt_stand")
+        return time.time() - t
     f.shot("belt_stand_miss")
     return None
 
