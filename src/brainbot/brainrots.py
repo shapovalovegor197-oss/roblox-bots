@@ -46,6 +46,15 @@ HOMOGLYPHS = {
 }
 
 
+def name_part(s: str) -> str:
+    """Только имя: всё от знака доллара и дальше — это цена.
+
+    Цифры цены нормализация превращает в буквы (5->s, 0->o, 1->l), и «lirili
+    $250» становилось «liriliso» — совпадение по началу имени ломалось.
+    """
+    return s.split("$")[0]
+
+
 def normalize(s: str) -> str:
     """Имя под сравнение: раскладываем двойников и терпим типовые ошибки OCR.
 
@@ -101,13 +110,26 @@ class Catalog:
         """Найти брейнрота по прочитанному тексту. None — не похоже ни на что."""
         if not self.items or not text:
             return None
-        n = normalize(text)
+        n = normalize(name_part(text))
         # Меньше четырёх букв — это не имя, а обрывок или число. Без этой отсечки
         # строка «$25» уверенно матчилась в брейнрота «25» из справочника.
         if len(n) < 4:
             return None
         if n in self._norm:
             return self.items[self._norm[n]]
+        # ПО НАЧАЛУ ИМЕНИ. OCR режет длинные имена: с ленты приходит «lirili»
+        # вместо «Lirilì Larilà» и «glorbo» вместо «Glorbo Fruttodrillo».
+        # Похожесть тут не спасает — «glorbo» против «glorbofruttodrillo» даёт
+        # 0.5 при пороге 0.72, и целая карточка проходит мимо. Зато начало
+        # имени однозначно: если оно совпадает ровно с одним брейнротом,
+        # сомневаться не в чем.
+        if len(n) >= 5:
+            starts = [k for k in self._norm if k.startswith(n)]
+            if len(starts) == 1:
+                return self.items[self._norm[starts[0]]]
+            inside = [k for k in self._norm if n in k]
+            if len(inside) == 1:
+                return self.items[self._norm[inside[0]]]
         hit = difflib.get_close_matches(n, self._norm.keys(), n=1, cutoff=cutoff)
         if hit:
             return self.items[self._norm[hit[0]]]
@@ -119,9 +141,13 @@ class Catalog:
         candidates += [f"{a} {b}" for a, b in zip(texts, texts[1:])]
         best, best_score = None, 0.0
         for t in candidates:
-            n = normalize(t)
+            n = normalize(name_part(t))
             if len(n) < 4:
                 continue
+            if len(n) >= 5:
+                starts = [k for k in self._norm if k.startswith(n)]
+                if len(starts) == 1:
+                    return self.items[self._norm[starts[0]]]
             hit = difflib.get_close_matches(n, self._norm.keys(), n=1, cutoff=cutoff)
             if not hit:
                 continue
