@@ -190,6 +190,10 @@ def load_goals() -> None:
         with open(KNOW, encoding="utf-8") as fh:
             k = json.load(fh)
         state["цели"] = k.get("цели_ребёрна") or []
+        # Память тоже идёт в накопитель: панель показывает требования не
+        # целиком, и то, что мы уже знаем, терять нельзя.
+        state["все_требования"] = sorted(set(state.get("все_требования") or [])
+                                         | set(state["цели"]))
         state["нужно_денег"] = k.get("нужно_денег")
         if state["цели"]:
             say("цели из памяти: %s" % ", ".join(state["цели"]))
