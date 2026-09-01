@@ -465,6 +465,10 @@ def shopping(deadline_left) -> None:
             f.hand.interact(BUY_HOLD)          # второй раз не повредит
             time.sleep(0.5)
             state["цели_куплены"].append(name)
+            # На базе появилось ЦЕННОЕ — режим «не запираюсь» отменяется сразу,
+            # не дожидаясь очередной проверки. Именно купленную цель уносят
+            # первой: 31.08 так потеряли Trulimero Trulicina.
+            state["база_пуста"] = False
             say("ЦЕЛЬ %s: удержание сделано, проверю ребёрном" % name)
             maybe_rebirth(after_target=True)
             cash = sane_cash(cash) or cash
