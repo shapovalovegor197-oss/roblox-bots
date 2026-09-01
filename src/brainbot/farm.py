@@ -3342,12 +3342,26 @@ class Farmer:
             self.dismiss_modals()
             return False
 
-        # кнопка подтверждения — единственная со словом rebirth внутри окна
-        if not self._menu_click("rebirth", timeout=3.0, exact=True):
+        # Кнопка подтверждения. Искать её по ТОЧНОМУ «rebirth» нельзя: OCR
+        # стабильно читает R как n и отдаёт «nebirth» — проверено 01.09,
+        # строка (640, 518). С точным совпадением бот не нажал бы кнопку
+        # никогда, сколько бы требований ни собрал.
+        #
+        # Отличаем кнопку от заголовка окна по высоте: заголовок вверху
+        # (y около 0.27 кадра), кнопка внизу (0.72).
+        b = self.window.client_box()
+        btn = None
+        for t, x, y in ocr.lines(self.frame()):
+            if "birth" in t.lower() and y > b.height * 0.55:
+                btn = (x, y)
+                break
+        if btn is None:
             log.warning("кнопку подтверждения ребёрна не нашёл")
             self.shot("fail_rebirth_confirm")
             self.dismiss_modals()
             return False
+        log.info("жму кнопку перерождения @%s,%s", btn[0], btn[1])
+        self.hand.click(btn[0], btn[1], hold=0.25)
         time.sleep(4.0)
         self.dismiss_modals()
 
