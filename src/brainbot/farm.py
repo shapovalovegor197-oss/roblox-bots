@@ -3332,6 +3332,10 @@ class Farmer:
             return False
 
         info = self.read_rebirth_window()
+        # Отдаём наружу: вызывающему нужно знать, сколько целей СЕЙЧАС стоит на
+        # базе. Пока их ноль — красть у нас нечего, и запираться незачем; как
+        # только появилась хоть одна — база снова под охраной.
+        self.last_rebirth_info = info
         log.info("окно ребёрна: накоплено %s из %s, нужны предметы %s",
                  info["have_cash"], info["need_cash"], info["need_items"])
         self.shot("rebirth_window")
