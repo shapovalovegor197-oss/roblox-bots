@@ -35,6 +35,8 @@ for path in sorted(glob.glob(mask)):
     except Exception as exc:                          # noqa: BLE001
         print("%-52s ОШИБКА %s" % (path.split("/")[-1], exc))
         continue
-    print("%-52s $%s/%s  насыщенность=%s  не хватает=%s"
-          % (path.split("/")[-1], info["have_cash"], info["need_cash"],
-             info["item_saturation"], info["need_items"]))
+    import os
+    print("%-52s $%s/%s  насыщенность=%s  не хватает=%s  тёмных без имени=%s  коробок=%s"
+          % (os.path.basename(path), info["have_cash"], info["need_cash"],
+             info["item_saturation"], info["need_items"],
+             info.get("unreadable_dark"), info.get("boxes")))

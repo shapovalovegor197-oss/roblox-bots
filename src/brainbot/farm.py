@@ -3181,6 +3181,10 @@ class Farmer:
                                    "к": "k", "К": "k", "м": "m", "М": "m",
                                    "б": "6", "В": "b", "Т": "t"})
 
+    # Ниже этой насыщенности иконка требования считается ЧЁРНЫМ силуэтом,
+    # то есть непокупленным. Замеры: силуэт 17-23, купленный 200-240.
+    DARK_ICON = 60.0
+
     def _requirement_boxes(self, frame) -> list[tuple[int, int, int, int]]:
         """Коробки требуемых брейнротов в окне ребёрна, слева направо.
 
@@ -3266,23 +3270,39 @@ class Farmer:
                 have = ocr.parse_amount(amounts[0])
                 need_cash = ocr.parse_amount(amounts[1])
                 break
-        names, sats = [], {}
+        # Считаем ПО КОРОБКАМ, а не по прочитанным именам.
+        #
+        # Подпись под тёмным силуэтом OCR берёт через раз: стенд
+        # `scripts/rebirth_boxes.py` по тридцати кадрам 01.09 показал, что имя
+        # НЕкупленного Chef Crabracadabra прочиталось четыре раза из тридцати,
+        # тогда как сама коробка находилась во всех тридцати, а насыщенность
+        # держалась ровно (22.4 у силуэта против 223.7 у купленного). Когда имя
+        # не прочиталось, требование ПРОПАДАЛО из списка — и окно отдавало
+        # «нужны предметы []» при явно тёмной иконке. 01.09 в 07:37 бот на этом
+        # трижды нажал Rebirth, игра трижды молча отказала, и ночь ушла впустую.
+        boxes = []
         for box in self._requirement_boxes(frame):
             name, sat = self._read_requirement_box(frame, box)
-            if name and name not in names:
-                names.append(name)
-                sats[name] = round(sat, 1)
-        # НЕ ХВАТАЕТ только тех, чья иконка ТЁМНАЯ. Насыщенность разводит это
+            boxes.append((name, round(sat, 1)))
+        names = [n for n, _ in boxes if n]
+        sats = {n: s for n, s in boxes if n}
+        # НЕ ХВАТАЕТ тех, чья иконка ТЁМНАЯ. Насыщенность разводит это
         # уверенно: замер на живом окне 31.08 — купленный Trulimero Trulicina
         # даёт 200.0 (цветная иконка с зелёной галкой), некупленный
         # Chimpanzini Bananini — 17.4 (силуэт). Раньше сюда шли ВСЕ имена
         # подряд, насыщенность только писалась в отчёт, и ребёрн не мог
         # состояться ни при каком раскладе: список требований никогда не
         # пустел.
-        missing = [n for n in names if sats.get(n, 0.0) < 60.0]
+        missing = [n for n, s in boxes if n and s < self.DARK_ICON]
+        # Тёмная коробка с непрочитанной подписью — тоже невыполненное
+        # требование. В `need_items` её класть нельзя: этот список накапливается
+        # по именам и уходит в цели закупа, а имени у неё нет. Но ребёрн она
+        # обязана запретить — это и есть та самая дыра из 07:37.
+        unreadable = sum(1 for n, s in boxes if not n and s < self.DARK_ICON)
         return {"have_cash": have, "need_cash": need_cash,
                 "need_items": missing, "items_all": names,
-                "item_saturation": sats, "lines": lines}
+                "item_saturation": sats, "unreadable_dark": unreadable,
+                "boxes": len(boxes), "lines": lines}
 
     def rebirth(self) -> bool:
         """Сделать перерождение, если требования выполнены.
@@ -3334,9 +3354,20 @@ class Farmer:
         # насыщенность разводит их уверенно (200.0 против 17.4). Сверять это
         # ещё и по подписям на базе не нужно: там OCR путается, а окно —
         # источник первой руки.
-        if info["need_items"]:
-            log.info("рано: не хватает %s (в окне: %s)",
-                     info["need_items"], info.get("items_all"))
+        if info["need_items"] or info.get("unreadable_dark"):
+            log.info("рано: не хватает %s%s (коробок %s, в окне: %s)",
+                     info["need_items"],
+                     (" + тёмных без имени %d" % info["unreadable_dark"])
+                     if info.get("unreadable_dark") else "",
+                     info.get("boxes"), info.get("items_all"))
+            self.dismiss_modals()
+            return False
+        # Ни одной коробки не нашли — это не «требований нет», это слепота.
+        # Окно могло не дорисоваться или смениться оформлением, а ребёрн
+        # НЕОБРАТИМ и стирает базу. Молчим и ждём следующего круга.
+        if not info.get("boxes"):
+            log.warning("окно ребёрна без коробок требований — не жму")
+            self.shot("rebirth_no_boxes")
             self.dismiss_modals()
             return False
 
