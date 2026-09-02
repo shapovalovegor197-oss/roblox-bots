@@ -3170,7 +3170,14 @@ class Farmer:
                 time.sleep(1.0)
                 return True
             time.sleep(0.3)
-        log.warning("пункт меню %r не найден", word)
+        # Не находится — надо видеть, что именно было на экране: пункт не
+        # прочитался (OCR) или его там нет вовсе (окно, другая сцена).
+        try:
+            seen = [t for t, _x, _y in ocr.lines(self.frame())][:20]
+            log.warning("пункт меню %r не найден; в кадре читаю: %s", word, seen)
+            self.shot("menu_miss_%s" % word)
+        except Exception:
+            log.warning("пункт меню %r не найден", word)
         return False
 
     # Кириллические двойники в числах. OCR русской локали подставляет их в
