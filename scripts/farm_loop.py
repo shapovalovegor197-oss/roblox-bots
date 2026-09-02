@@ -380,23 +380,33 @@ def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
     пройти пять шагов наружу — и всё, дальше ждёт закуп.
     """
     t = time.time()
+    # Фазы дороги меряем по отдельности. Дорога к ленте — самая дорогая часть
+    # круга при запертой двери: замер 02.09 (10:53:38 -> 10:54:29) дал 51 с из
+    # 90 секунд лока, и без разбивки не понять, что резать.
     f.reset_to_base()
     time.sleep(1.2)
     f.set_work_view()
     f.close_players_table()
+    t_респавн = time.time() - t
     if f.face_base_from_top() is None:
         say("пад сверху не опознан — известного нуля нет")
+    t_пеленг = time.time() - t - t_респавн
     for _ in range(7):
         fr = f.frame()
         if not f.inside_base(fr) and f.looking_outside(fr):
             break
         f.hand.turn_degrees(45)
         time.sleep(0.35)
+    t_разворот = time.time() - t - t_респавн - t_пеленг
     for i in range(max_steps):
         f.hand.hold("w", 0.6)
         time.sleep(0.22)
         if at_belt() or on_belt():
-            say("на ленте на %d-м шаге" % (i + 1))
+            say("на ленте на %d-м шаге; ДОРОГА: респавн %.1f, пеленг %.1f, "
+                "разворот %.1f, шаги %.1f, всего %.1f"
+                % (i + 1, t_респавн, t_пеленг, t_разворот,
+                   time.time() - t - t_респавн - t_пеленг - t_разворот,
+                   time.time() - t))
             f.shot("belt_stand")
             return time.time() - t
     # Рядом, но не на полотне — доступаем по картинке.
