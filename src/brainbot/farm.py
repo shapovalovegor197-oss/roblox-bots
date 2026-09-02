@@ -773,10 +773,20 @@ class Farmer:
         В самом меню Esc внизу есть кнопка Respawn — её и жмём, найдя по тексту.
         Дальше игра просит подтверждение, его тоже находим по тексту.
         """
+        # Респавн — самая дорогая часть круга: 14 с, и он в круге ДВАЖДЫ (дорога
+        # к ленте и возврат к плите). Меряем по фазам, иначе резать нечего:
+        # с дорогой этот приём уже сработал (замер 02.09).
+        _t0 = time.time()
+        _фазы: dict[str, float] = {}
+
+        def _метка(имя: str) -> None:
+            _фазы[имя] = round(time.time() - _t0 - sum(_фазы.values()), 1)
+
         self.hand.ensure_focus()
         self.hand.press("esc"); time.sleep(1.1)
         if not self._menu_click("respawn", timeout=3.0, exact=True):
             self.hand.press("r"); time.sleep(0.4)      # запасной путь
+        _метка("меню")
         # Подтверждение: в диалоге ровно две кнопки, «Respawn» и «Don't respawn».
         # Совпадение только точное, иначе попадём в текст вопроса.
         for _ in range(3):
@@ -789,6 +799,7 @@ class Farmer:
         else:
             log.warning("диалог подтверждения респавна не ушёл")
             self.shot("fail_respawn_confirm")
+        _метка("подтверждение")
         # Ждём не наугад, а пока картинка не перестанет меняться: анимация
         # возрождения короче четырёх секунд, а четыре стояли с запасом.
         prev = None
@@ -798,6 +809,9 @@ class Farmer:
             if prev is not None and float(np.abs(cur.astype(int) - prev.astype(int)).mean()) < 3.0:
                 break
             prev = cur
+        _метка("анимация")
+        log.info("РЕСПАВН: %s, всего %.1f",
+                 ", ".join("%s %.1f" % kv for kv in _фазы.items()), time.time() - _t0)
 
     def zoom_out_until_overview(self) -> bool:
         """Отъезжать порциями, пока в кадре не появится плашка 'YOUR BASE'.

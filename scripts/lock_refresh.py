@@ -16,6 +16,9 @@ from brainbot import config, log                      # noqa: E402
 from brainbot.window import enum_roblox_windows       # noqa: E402
 from brainbot.inputs import Hand                      # noqa: E402
 from brainbot.farm import Farmer, FarmTuning          # noqa: E402
+from brainbot import single                          # noqa: E402
+
+single.занять("опыт с локом")
 
 WAIT = float(sys.argv[1]) if len(sys.argv) > 1 else 25.0
 
@@ -55,3 +58,7 @@ elif before and after and after > before + 10:
     print("ВЫВОД: вспышки не видел, но счётчик вырос %s -> %s — обновление есть" % (before, after))
 else:
     print("ВЫВОД: обновления НЕТ — пока лок держит, плита не срабатывает")
+
+# Опыт закончен — дверь оставляем ЗАКРЫТОЙ. Правило пользователя от 03.09:
+# во время тестов база не должна стоять открытой.
+single.запереть_базу(f)

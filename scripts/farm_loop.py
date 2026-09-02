@@ -69,51 +69,12 @@ BUY_HOLD = 2.0         # промпт держать, иначе не засчи
 # двадцать минут — нормальная сделка.
 PAYBACK_SEC = 1200.0
 
-# ------------------------------------------------------------------------
-# Один прогон на машину. Замер 02.09, 19:52-20:14: я оставил работать прежний
-# прогон и запустил новый — два бота двадцать две минуты дрались за одного
-# персонажа. Один респавнил, другой шёл к плите; пеленг пада прыгал (+71, -114,
-# +165), вылезало системное меню Roblox, лок не вставал. ДВЕРЬ ПРОСТОЯЛА
-# ОТКРЫТОЙ 930 секунд подряд, и за это время у нас унесли Glorbo Fruttodrillo —
-# уже купленную цель ребёрна: в 19:47 его коробка в окне горела, в 20:16 обе
-# коробки тёмные. Цена ошибки — легендарный брейнрот, поэтому проверка здесь, а
-# не в инструкции.
-#
-# Замок не убираем за собой: устаревший распознаётся по мёртвому pid, а лишний
-# способ что-то стереть тут не нужен.
-import ctypes                                            # noqa: E402
-import os                                                # noqa: E402
+# Один хозяин ввода на машину: замок и правило «дверь закрыта» вынесены в
+# brainbot.single, потому что их обязаны соблюдать и тестовые скрипты, а не
+# только ферма. История вопроса — в самом модуле.
+from brainbot import single                                # noqa: E402
 
-LOCKFILE = "var/farm_loop.lock"
-
-
-def _процесс_жив(pid: int) -> bool:
-    """Жив ли процесс с таким pid. Через WinAPI: os.kill на Windows убивает."""
-    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED
-    if not h:
-        return False
-    код = ctypes.c_ulong()
-    ок = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(код))
-    ctypes.windll.kernel32.CloseHandle(h)
-    return bool(ок) and код.value == 259                          # STILL_ACTIVE
-
-
-def _занять_замок() -> None:
-    прежний = 0
-    if os.path.exists(LOCKFILE):
-        try:
-            with open(LOCKFILE, encoding="utf-8") as fh:
-                прежний = int(fh.read().strip() or 0)
-        except (ValueError, OSError):
-            прежний = 0
-    if прежний and прежний != os.getpid() and _процесс_жив(прежний):
-        sys.exit("ферма уже работает (pid %d). Два прогона на одном персонаже "
-                 "оставляют базу открытой — останови прежний." % прежний)
-    with open(LOCKFILE, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
-
-
-_занять_замок()
+single.занять("ферму")
 
 s = config.load()
 log.setup(s.logs_dir)
