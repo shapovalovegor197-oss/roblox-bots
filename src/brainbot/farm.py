@@ -2438,6 +2438,23 @@ class Farmer:
         txt = " ".join(t.lower() for t, x, y in ocr.lines(frame) if x / w > 0.18)
         return any(m in txt for m in self.OUTSIDE_MARKERS)
 
+    def scene_flags(self, frame) -> tuple[bool, bool]:
+        """(внутри базы, вижу мир) — за ОДНО распознавание.
+
+        `inside_base` и `looking_outside` читают один и тот же кадр одним и тем
+        же фильтром (x/w > 0.18) и различаются только словами, которые ищут. А
+        вызывались подряд, и полный OCR шёл дважды. Замер 02.09, 19:46: разворот
+        наружу — семь оборотов по два распознавания — стоил 19.7 с из 90 секунд
+        лока, при том что ночью подписи мира не читаются вовсе («вижу мир False»
+        семь раз из семи) и цикл всё равно доходит до конца.
+        """
+        w = frame.shape[1]
+        txt = " ".join(t.lower() for t, x, y in ocr.lines(frame) if x / w > 0.18)
+        внутри = ("allow" in txt or any(_nav_looks_like(p, "lock base")
+                                        for p in (txt, txt.replace(" ", ""))))
+        наружу = any(m in txt for m in self.OUTSIDE_MARKERS)
+        return внутри, наружу
+
     def sweep_for_glow(self, steps: int = 12) -> bool:
         """Обойти полный круг и встать на ЛУЧШЕЕ свечение. True, если нашли.
 
