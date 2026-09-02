@@ -267,6 +267,12 @@ def read_goals() -> None:
         note_targets_on_base(info)
         if info["need_cash"]:
             state["нужно_денег"] = info["need_cash"]
+        # Хватает ли денег — спрашиваем У ПАНЕЛИ, а не только у HUD. Полоса
+        # прогресса «$ 35M / $ 35M» — это ответ игры, и он есть даже когда HUD
+        # не прочитался. 02.09 в 10:42 старт вернул кэш None (сразу после
+        # закрытия окна), охота не включилась, и бот пошёл запирать пустую базу.
+        if info["have_cash"] is not None and info["need_cash"]:
+            state["денег_хватает"] = info["have_cash"] >= info["need_cash"]
         remember_goals()
         say("цели: %s, нужно $%s, накоплено $%s"
             % (", ".join(state["цели"]), info["need_cash"], info["have_cash"]))
@@ -825,7 +831,10 @@ def circle() -> None:
     # стоим у ленты без перерыва. Как только цель куплена, запираемся сразу:
     # вот её уже унесут.
     need = state["нужно_денег"] or 0
-    охота = bool(state["цели"]) and need and (state["кэш"] or 0) >= need * 1.05
+    хватает = bool(state.get("денег_хватает"))
+    if need and (state["кэш"] or 0) >= need * 1.05:
+        хватает = True
+    охота = bool(state["цели"]) and хватает
     # Запираемся ВСЕГДА, пока на базе есть хоть одна цель. Правило пользователя
     # и оно остаётся: 01.09 попытка стоять у ленты после покупки стоила
     # Glorbo Fruttodrillo — взят в 04:21, к 04:30 панель показала его снова
@@ -913,8 +922,17 @@ except Exception as _exc:                                   # noqa: BLE001
 # руками, а бот после перезапуска пошёл искать прежних двух.
 load_goals()
 read_goals()
-state["кэш"] = f.read_hud_cash()
+# Кэш на старте — с трёх попыток. Первое чтение идёт сразу после закрытия окна
+# ребёрна, и HUD в этот момент часто перекрыт: 02.09 в 10:42 вернулось None, и
+# от этого не включилась охота.
+for _ in range(3):
+    state["кэш"] = f.read_hud_cash()
+    if state["кэш"]:
+        break
+    time.sleep(1.5)
 state["кэш_старт"] = state["кэш"]
+say("кэш на старте: %s, денег хватает: %s"
+    % (state["кэш"], state.get("денег_хватает")))
 save()
 end = time.time() + MINUTES * 60
 while time.time() < end:
