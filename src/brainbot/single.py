@@ -22,7 +22,9 @@ import ctypes
 import os
 import sys
 
-from . import log
+from .log import get
+
+log = get("single")
 
 LOCKFILE = "var/farm_loop.lock"
 
