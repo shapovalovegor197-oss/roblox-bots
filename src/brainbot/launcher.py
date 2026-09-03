@@ -204,3 +204,36 @@ def newest_job_id(place_id: int | None = None, newer_than: float = 0.0) -> str |
             continue
         return job
     return None
+
+def quietest_job_id(place_id: int, максимум_игроков: int = 3) -> str | None:
+    """jobId самого малолюдного публичного сервера. None — не нашли/сеть молчит.
+
+    Зачем. Всё, что стоит на базе, у нас крадут: за ночь 02-03.09 так потеряны
+    два легендарных подряд, а после первого ребёрна — все три купленных доходных
+    брейнрота, и база к 10:02 стояла пустая при пороге следующего ребёрна в
+    $100M. Красть могут только живые соседи по серверу, значит вопрос решается
+    не зрением бота, а выбором сервера: их сотни, и среди них есть с одним
+    игроком из восьми (проверено 03.09, HTTP 200, сто серверов в ответе).
+
+    Берём самый пустой, но НЕ пустой совсем: сервер без игроков часто вот-вот
+    закроется, и клиент попадёт в другой.
+    """
+    import requests
+
+    url = ("https://games.roblox.com/v1/games/%d/servers/Public"
+           "?sortOrder=Asc&limit=100" % place_id)
+    try:
+        ответ = requests.get(url, timeout=20)
+        ответ.raise_for_status()
+        сервера = ответ.json().get("data") or []
+    except Exception as exc:                                # noqa: BLE001
+        log.warning("список серверов не получен (%s) — иду куда пустят", exc)
+        return None
+    годные = [s for s in сервера
+              if s.get("id") and 0 < (s.get("playing") or 0) <= максимум_игроков]
+    if not годные:
+        log.info("серверов тише %d игроков нет — иду куда пустят", максимум_игроков)
+        return None
+    лучший = min(годные, key=lambda s: s["playing"])
+    log.info("выбран сервер: игроков %s из %s", лучший["playing"], лучший.get("maxPlayers"))
+    return лучший["id"]

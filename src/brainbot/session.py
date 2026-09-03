@@ -33,14 +33,25 @@ class Session:
     def alive(self) -> bool:
         return self.window is not None and self.window.alive()
 
-    def launch(self) -> bool:
-        """Поднимает клиент и дожидается окна. False — не взлетело."""
+    def launch(self, job_id: str | None = None, тихий: bool = True) -> bool:
+        """Поднимает клиент и дожидается окна. False — не взлетело.
+
+        По умолчанию целимся в САМЫЙ МАЛОЛЮДНЫЙ сервер. Причина не в скорости, а
+        в воровстве: всё, что стоит на базе, у нас уносят живые соседи. За ночь
+        02-03.09 так потеряны два легендарных подряд, а после первого ребёрна —
+        все три купленных доходных брейнрота, и база к 10:02 стояла пустая при
+        пороге следующего ребёрна в $100M. Серверов сотни, среди них есть с
+        одним игроком из восьми — там красть просто некому.
+        """
         opt = self.settings.optimize
+        if job_id is None and тихий:
+            job_id = launcher.quietest_job_id(self.settings.place_id)
         try:
             self.pid = launcher.launch(
                 self.account, self.settings.place_id,
                 apply_fflags=opt.get("apply_fflags", True),
                 target_fps=opt.get("target_fps"),
+                job_id=job_id,
             )
         except launcher.LaunchError as e:
             log.error("[%s] %s", self.account.name, e)
