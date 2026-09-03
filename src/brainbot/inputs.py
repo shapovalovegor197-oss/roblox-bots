@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import random
+import atexit
 import time
 
 import pydirectinput
@@ -48,6 +49,12 @@ class Hand:
         # камеры, и удержание игровых промптов (покупка, сбор, лок) не
         # засчитывается — из-за этого покупка когда-то не работала вовсе.
         self.shift_lock = bool(cfg.get("shift_lock", False))
+        # Отпускать клавиши НА ВЫХОДЕ, чем бы выход ни был. Жёсткая остановка
+        # процесса (я так снимал прогоны 02-03.09) оставляла зажатой «w» или
+        # шифт, и следующий бот получал персонажа, который сам идёт вперёд:
+        # площадь свечения плиты не менялась шесть дошагов подряд, лок не
+        # вставал, а причина была не в зрении вовсе.
+        atexit.register(self.release_all)
         self._poster = None
         self.move_duration = cfg.get("move_duration", 0.12)
         self.jitter = cfg.get("click_jitter_px", 2)
