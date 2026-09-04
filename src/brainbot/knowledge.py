@@ -90,6 +90,10 @@ class Knowledge:
     # шагов пройти. Найдено перебором направлений и подтверждено локом.
     lock_heading: float | None = None
     lock_steps: int | None = None
+    # Клавиша слепого лока: сторона плота меняется при перезаходе, а замер
+    # 04.09 показал, что от спавна до плиты доходит фиксированное удержание.
+    # Помним, какая сторона сработала, чтобы не перебирать обе каждый раз.
+    blind_lock_key: str | None = None
 
     _dirty: bool = False
     _last_save: float = 0.0
@@ -118,6 +122,7 @@ class Knowledge:
         kb.units_per_turn = data.get("единиц_на_оборот")
         kb.lock_heading = data.get("лок_градусов")
         kb.lock_steps = data.get("лок_шагов")
+        kb.blind_lock_key = data.get("слепой_лок_клавиша")
         kb.forget_old()
         log.info("память: %s клавиш в таблице, %s упоров, мышь %s",
                  len(kb.axes), len(kb.walls),
@@ -147,6 +152,7 @@ class Knowledge:
             "единиц_на_оборот": self.units_per_turn,
             "лок_градусов": self.lock_heading,
             "лок_шагов": self.lock_steps,
+            "слепой_лок_клавиша": self.blind_lock_key,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")

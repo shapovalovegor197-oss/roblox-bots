@@ -72,6 +72,11 @@ class FarmTuning:
     # сколько идти от базы (в секундах, key hold)
     to_conveyor_sec: float = 1.7
     to_lock_sec: float = 1.8
+    # Слепой лок: пробовать ли фиксированное удержание ДО распознавания пада.
+    # Замер 04.09: 8 попаданий из 10, 11.8 с против 17.6 с закрытого цикла.
+    # Выключить = вернуться ровно к прежнему поведению, ничего больше не трогая.
+    blind_lock: bool = True
+    blind_lock_keys: tuple = ("d", "a")
     # зум: порция кликов наружу за шаг и потолок числа шагов
     zoom_step: int = 6
     zoom_max_steps: int = 8
@@ -2364,6 +2369,145 @@ class Farmer:
             time.sleep(0.25)
         return last
 
+    # ------------------------------------------------------------------
+    # Слепой лок: без вида сверху, без пеленга, без свечения
+    # ------------------------------------------------------------------
+    #
+    # Замер 04.09 (scripts/det_probe.py), три ступени:
+    #
+    # 1. Рысканье камеры переживает и респавн, и ходьбу удержанием: сдвиг сцены
+    #    dx = 0.0 px во всех десяти замерах при отклике корреляции 0.63-0.94.
+    #    То есть «вперёд» после респавна — всегда одно и то же направление,
+    #    пока мы не ведём мышь горизонтально.
+    # 2. Перебор «клавиша, срок» нашёл маршрут с первого же кандидата: `d` на
+    #    1.8 с, игра ответила «You locked your base for 100 seconds!».
+    #    Та же константа, что у референсного макроса, и та же, что уже лежала
+    #    в FarmTuning.to_lock_sec.
+    # 3. Слепой повтор: 8 попаданий из 10, 11.5-11.9 с на удачный заход против
+    #    17.6 с закрытого цикла — и без единого обращения к детектору пада,
+    #    который за ночь 03.09 отказал 41 раз.
+    #
+    # Поэтому слепой ход идёт ПЕРВЫМ, а весь прежний путь остаётся запасным:
+    # не ответила игра — работает `lock_via_top`/`lock_forward`, как раньше.
+
+    _ОТВЕТ_ФРАЗЫ = ("yourbaseisalreadylocked", "youlockedyourbasefor")
+    _ОТВЕТ_ПОРОГ = 0.48
+    _ОТВЕТ_ТРАНСЛИТ = str.maketrans({
+        "а": "a", "б": "b", "в": "b", "г": "r", "д": "d", "е": "e", "ё": "e",
+        "з": "3", "и": "u", "к": "k", "м": "m", "н": "h", "о": "o", "п": "n",
+        "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "ь": "b", "ъ": "b",
+        "№": "n", "€": "e", "±": "t", "ш": "w", "щ": "w", "й": "u"})
+
+    @classmethod
+    def _lock_answer_score(cls, text: str) -> float:
+        """Насколько текст полосы похож на ответ игры про лок. 0..1.
+
+        Проверка по подстроке тут не работает вовсе, и это замер, а не догадка:
+        WinRT-OCR отдаёт «Your base is already locked!» как 'уоиг base aaoady
+        bgpodg', 'мои base js a>ady bgded!', 'аагеаау ьск<д х-'. Боевой
+        `read_lock_flash` ищет слово «already» — ни один из этих вариантов его
+        не содержит.
+
+        Сравниваем фразу ЦЕЛИКОМ: так десять живых прочтений дают 0.51-0.91, а
+        65 случайных кадров без ответа — максимум 0.40, причём 61 из них ровно
+        ноль. Порог 0.48 стоит посередине разрыва.
+        """
+        import difflib
+        t = "".join(c for c in text.lower().translate(cls._ОТВЕТ_ТРАНСЛИТ)
+                    if c.isalnum())
+        best = 0.0
+        for phrase in cls._ОТВЕТ_ФРАЗЫ:
+            n = len(phrase)
+            for i in range(0, max(1, len(t) - n // 2)):
+                best = max(best, difflib.SequenceMatcher(
+                    None, t[i:i + n + 4], phrase).ratio())
+        return best
+
+    def read_lock_answer(self, wait: float = 3.0) -> tuple[float, str]:
+        """Ответила ли игра на E: (оценка, прочитанный текст).
+
+        Текст отдаём всегда, даже когда не сошлось: по нему видно, что именно
+        прочиталось, и порог можно перепроверить по логу, не тратя игру.
+        """
+        edge = time.time() + wait
+        best, seen = 0.0, ""
+        while time.time() < edge:
+            frame = self.frame()
+            h, w = frame.shape[:2]
+            band = frame[int(h * 0.80):int(h * 0.95), int(w * 0.25):int(w * 0.80)]
+            text = " ".join(t for t, _, _ in ocr.lines(band))
+            score = self._lock_answer_score(text)
+            if score > best:
+                best, seen = score, text
+            if score >= self._ОТВЕТ_ПОРОГ:
+                return score, text
+            time.sleep(0.25)
+        return best, seen
+
+    def wait_alive(self, limit: float = 14.0):
+        """Кадр, снятый когда тело УЖЕ ВСТАЛО после респавна.
+
+        `reset_to_base` возвращает управление раньше: камера смерти стоит
+        неподвижно, проверка «картинка перестала меняться» её пропускает, и
+        дальше бот ищет пад на кадре, где персонажа нет вообще (кадр 04.09,
+        01:08:36 — вид с земли на площадь). Пять кадров из шести в первом
+        замере были именно такими.
+
+        Ловим сам скачок воскрешения, потом ждём, пока картинка встанет.
+        """
+        def steady(span: float):
+            edge = time.time() + span
+            prev, cur = None, self.frame()
+            while time.time() < edge:
+                time.sleep(0.35)
+                cur = self.frame()
+                if prev is not None and self._moved(prev, cur) < 0.02:
+                    return cur
+                prev = cur
+            return cur
+
+        prev = steady(4.0)
+        edge = time.time() + limit
+        while time.time() < edge:
+            time.sleep(0.3)
+            cur = self.frame()
+            if self._moved(prev, cur) > 0.25:
+                return steady(4.0)
+            prev = cur
+        return prev
+
+    def lock_blind(self, keys=None, hold: float | None = None) -> int | None:
+        """Запереть базу вслепую: респавн, фиксированное удержание, E.
+
+        Ни вида сверху, ни свечения, ни пеленга — ровно то, чего в критическом
+        пути не хватало. Клавиш пробуем две: сторона плота меняется при
+        перезаходе, и удачную запоминаем в памяти между запусками.
+        """
+        keys = keys or list(self.tuning.blind_lock_keys)
+        learned = getattr(self.nav.kb, "blind_lock_key", None)
+        if learned in keys:
+            keys = [learned] + [k for k in keys if k != learned]
+        hold = self.tuning.to_lock_sec if hold is None else hold
+        for key in keys:
+            t0 = time.time()
+            self.reset_to_base()
+            self.wait_alive()
+            self.hand.hold(key, hold)
+            time.sleep(0.4)
+            self.hand.interact(1.4)
+            score, text = self.read_lock_answer()
+            if score >= self._ОТВЕТ_ПОРОГ:
+                left = self.read_lock_left(quick=True) or self.lock_seconds or 80
+                log.info("СЛЕПОЙ ЛОК: %s на %.1f с — дошёл за %.1f с "
+                         "(оценка %.2f, %r)", key, hold, time.time() - t0,
+                         score, text[:40])
+                self.nav.kb.blind_lock_key = key
+                self.nav.kb.save()
+                return self.note_locked(left)
+            log.info("слепой лок %s на %.1f с — игра не ответила "
+                     "(оценка %.2f, %r)", key, hold, score, text[:40])
+        return None
+
     def lock_with_retries(self, attempts: int = 3) -> int | None:
         """Запереть базу, перерождаясь между попытками.
 
@@ -2388,6 +2532,13 @@ class Farmer:
             if уже:
                 log.info("база уже заперта (%d с) — заход не нужен", уже)
                 return уже
+            # Слепой ход идёт первым и стоит 12 секунд. Не ответила игра —
+            # ниже работает ровно прежний путь, ничего не потеряно.
+            if i == 0 and getattr(self.tuning, "blind_lock", False):
+                left = self.lock_blind()
+                if left:
+                    return left
+                log.info("слепой лок не взял — иду прежним путём")
             log.info("попытка лока %d из %d", i + 1, attempts)
             self.reset_to_base()
             self.set_work_view()
