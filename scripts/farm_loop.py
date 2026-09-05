@@ -1065,7 +1065,12 @@ def circle() -> None:
 
     before = state["кэш"]
     if act == "сбор":
-        gain = f.collect_back_from_plate()
+        # Сперва по подписям «Collect $N» — это прямой признак, где лежат
+        # деньги. Не вышло (подписей нет, ушли наружу) — прежний проход по
+        # рядам как запасной путь.
+        gain = f.collect_by_labels(budget=min(25.0, СТОИМОСТЬ["сбор"]))
+        if not gain:
+            gain = f.collect_back_from_plate()
         if gain:
             state["собрано_всего"] += gain
             state["сборов_ноль_подряд"] = 0

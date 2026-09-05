@@ -1831,6 +1831,65 @@ class Farmer:
             time.sleep(0.15)
         return False
 
+    def collect_by_labels(self, budget: float = 30.0) -> float:
+        """Собрать деньги, идя на подписи «Collect $N».
+
+        Слепой проход по рядам за ночь 05.09 не дал НИ РАЗУ: три захода подряд
+        по нулю, а кадр collect_zero 02:42:47 показал бота СНАРУЖИ базы — пять
+        шагов назад выносят его через вход, и дальше он бродит по дорожке,
+        пока лок не истечёт. При этом деньги на базе есть и игра сама
+        показывает где: кадр 02:37:11 — «Collect $5.4M» рядом с брейнротом.
+
+        Значит идти надо не по счёту шагов, а НА ПОДПИСЬ: центрируем ближайшую
+        стрейфом (как в наведении на плиту), шагаем вперёд, проверяем кэш.
+        Вырос — пад засчитан, берём следующую подпись.
+
+        Ограничители, оба из ночного опыта: бюджет по времени (сбор идёт под
+        локом, и время у нас чужое — оно отнято у ленты) и выход наружу
+        (`looking_outside`) — увидели мир, значит вышли из базы, дальше идти
+        некуда.
+        """
+        before = self.read_hud_cash()
+        собрано_шагов = 0
+        end = time.time() + budget
+        последний = before
+        while time.time() < end:
+            frame = self.frame()
+            подписи = [(x, y) for t, x, y in ocr.lines(frame)
+                       if "collect" in t.lower()]
+            if not подписи:
+                log.info("сбор по подписям: «Collect» в кадре нет")
+                break
+            if self.looking_outside(frame):
+                log.info("сбор по подписям: вижу мир — я снаружи базы, стоп")
+                break
+            w = frame.shape[1]
+            x, _y = max(подписи, key=lambda p: p[1])     # самая нижняя — ближняя
+            off = x / w - 0.5
+            if abs(off) > 0.05:
+                # Доля кадра -> длительность стрейфа, ровно как в align_to_pad.
+                dur = min(0.35, max(0.08, abs(off) * 0.9))
+                self.hand.hold("d" if off > 0 else "a", dur)
+                time.sleep(0.12)
+                continue
+            self.hand.hold("w", 0.4)
+            time.sleep(0.25)
+            собрано_шагов += 1
+            сейчас = self.read_hud_cash()
+            if сейчас is not None and последний is not None and сейчас > последний:
+                log.info("сбор по подписям: +%.0f (стало %.0f) на шаге %d",
+                         сейчас - последний, сейчас, собрано_шагов)
+                последний = сейчас
+        after = self.read_hud_cash()
+        if before is not None and after is not None and after > before:
+            log.info("сбор по подписям: всего +%.0f (стало %.0f) за %d шагов",
+                     after - before, after, собрано_шагов)
+            return after - before
+        log.info("сбор по подписям не дал прироста (было %s, стало %s, шагов %d)",
+                 before, after, собрано_шагов)
+        self.shot("collect_labels_zero")
+        return 0.0
+
     def collect_back_from_plate(self, steps: int = 5) -> float:
         """Собрать деньги ПОСЛЕ запирания: пройти по каждому ряду ПРЯМО.
 
