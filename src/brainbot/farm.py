@@ -3755,8 +3755,13 @@ class Farmer:
         # базе. Пока их ноль — красть у нас нечего, и запираться незачем; как
         # только появилась хоть одна — база снова под охраной.
         self.last_rebirth_info = info
-        log.info("окно ребёрна: накоплено %s из %s, нужны предметы %s",
-                 info["have_cash"], info["need_cash"], info["need_items"])
+        # Полосу пишем в лог рядом с цифрами: решение о ребёрне принимает
+        # именно она (цифры OCR корёжит в кириллицу), и без числа в логе
+        # разбирать утром нечего.
+        log.info("окно ребёрна: накоплено %s из %s (полоса %.3f, касса %s), "
+                 "нужны предметы %s",
+                 info["have_cash"], info["need_cash"], info["bar_green"],
+                 "набрана" if info["cash_full"] else "нет", info["need_items"])
         self.shot("rebirth_window")
 
         have = info["have_cash"]
