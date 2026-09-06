@@ -189,6 +189,20 @@ def grab(box: Box, hwnd: int | None = None) -> np.ndarray:
     with _grab_lock:
         if hwnd:
             frame = _wgc_grab(hwnd)
+            # Поток WGC берёт размер буфера в момент открытия и за окном НЕ
+            # следит. Если клиент переразмерили на ходу, кадры продолжают
+            # приходить старого размера — то есть обрезком нового окна, — и
+            # зрение слепнет молча: доли кадра показывают мимо. Замер 06.09:
+            # окно вернули на 1280x720 в 20:06, а кадры до 20:33 приходили
+            # 800x599, бот 25 минут не мог найти плиту и держал дверь открытой.
+            # Размер сверяем на каждом кадре и поток переоткрываем — это дёшево
+            # против слепого прогона.
+            if (frame is not None and box.width > 0 and box.height > 0
+                    and frame.shape[:2] != (box.height, box.width)):
+                log.info("WGC отдаёт %dx%d, а окно %dx%d — переоткрываю поток",
+                         frame.shape[1], frame.shape[0], box.width, box.height)
+                release(hwnd)
+                frame = _wgc_grab(hwnd)
             if frame is not None:
                 return frame
 
