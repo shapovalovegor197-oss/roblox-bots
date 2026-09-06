@@ -3203,16 +3203,54 @@ class Farmer:
     # Операция 3: покупка с конвейера
     # ------------------------------------------------------------------
 
+    # Кнопки левого HUD (Shop / Rebirth→«nebirth» / Index / Duels→«dueis» /
+    # Trade / Codes) и вывески мира лезут в OCR карточки и глушат серое имя над
+    # промптом: половину кругов ночи 06.09 бот читал «purchase | index | dueis |
+    # shop» вместо брейнрота. Меню — фиксированная левая полоса кадра, её
+    # выбеливаем ДО OCR; остатки отсекаем по списку слов.
+    LEFT_HUD_FRAC = 0.145            # доля ширины кадра под левой колонкой HUD
+    UI_TOKENS = (
+        "purchase", "index", "shop", "duel", "duels", "dues", "dueis", "trade",
+        "codes", "rebirth", "nebirth", "empty", "base", "emptybase", "collect",
+        "zone", "collectzone", "cashmulti", "friend", "boost", "livespawns",
+        "guaranteed", "legendary",
+    )
+
+    def _mask_left_hud(self, frame):
+        """Копия кадра с выбеленной левой колонкой HUD (для чтения карточки)."""
+        import numpy as np
+        w = frame.shape[1]
+        cut = int(w * self.LEFT_HUD_FRAC)
+        m = frame.copy()
+        m[:, :cut] = np.uint8(30)     # ровный тёмный, OCR за него не цепляется
+        return m
+
+    @classmethod
+    def _is_ui_word(cls, text: str) -> bool:
+        """True — это подпись интерфейса, а не имя брейнрота."""
+        import difflib
+
+        from .brainrots import normalize
+        n = normalize(text)
+        if len(n) < 3:
+            return False
+        if n in cls.UI_TOKENS:
+            return True
+        return any(difflib.SequenceMatcher(None, n, tok).ratio() >= 0.82
+                   for tok in cls.UI_TOKENS)
+
     def _read_prompt_boosted(self, px: int, py: int) -> list[str]:
         """Перечитать окрестность промпта с усилением контраста.
 
         Промпт рисуется там, где стоит объект, поэтому область берём не
         фиксированную, а вокруг найденного слова «Purchase». Имя висит строкой
-        выше, цена — рядом с ним.
+        выше, цена — рядом с ним. Имя написано СЕРЫМ по серому, поэтому берём
+        два порога — глобальный и адаптивный — и объединяем: на ночном прогоне
+        глобального одного не хватало, имя не проявлялось (сбой ~30 кругов).
         """
         import cv2
         import numpy as np
-        frame = self.frame()
+        frame = self._mask_left_hud(self.frame())
         h, w = frame.shape[:2]
         x0, x1 = max(0, px - 320), min(w, px + 320)
         y0, y1 = max(0, py - 130), min(h, py + 20)
@@ -3221,12 +3259,22 @@ class Farmer:
             return []
         big = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
-        # Текст промпта светлее своей плашки, но темнее белого HUD. Порог берём
-        # не абсолютный, а от самой картинки: плашка бывает разной яркости.
+        # Контраст перед порогом: серое-на-сером иначе не разделяется.
+        gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
+        # Порог 1 — глобальный от самой картинки (плашка бывает разной яркости).
         thr = max(120, int(np.percentile(gray, 92)) - 30)
-        _, th = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
-        out = [t for t, _, _ in ocr.lines(cv2.cvtColor(th, cv2.COLOR_GRAY2BGR))
-               if len(t.strip()) > 1]
+        _, th_g = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
+        # Порог 2 — адаптивный: вытягивает текст, когда фон плавает по яркости.
+        th_a = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                     cv2.THRESH_BINARY, 31, 10)
+        out: list[str] = []
+        seen: set[str] = set()
+        for th in (th_g, th_a):
+            for t, _, _ in ocr.lines(cv2.cvtColor(th, cv2.COLOR_GRAY2BGR)):
+                s = t.strip()
+                if len(s) > 1 and s.lower() not in seen and not self._is_ui_word(s):
+                    seen.add(s.lower())
+                    out.append(s)
         return out
 
     # Мутации: они пишутся ОТДЕЛЬНОЙ строкой над именем на крупной вывеске и
@@ -3319,7 +3367,7 @@ class Farmer:
         дальним товаром — нет. Редкость и доход из кадра НЕ вытягиваем: имя есть в
         справочнике, а там эти поля точные. OCR ошибается, справочник — нет.
         """
-        lines = ocr.lines(self.frame())
+        lines = ocr.lines(self._mask_left_hud(self.frame()))
         # Не точное равенство, а вхождение в КОРОТКОЙ строке. Точное равенство
         # ломается от любого мусора рядом («purchase.», «e purchase»), и в
         # прогоне 03:20–03:35 бот стоял у ленты пять кругов подряд, ни разу не
@@ -3336,7 +3384,8 @@ class Farmer:
         # рвёт длинные имена на части и путает регистр, поэтому берём полосу
         # пошире и отдаём справочнику все варианты сразу — он выберет похожее.
         above = [(t, x, y) for t, x, y in lines
-                 if 0 < py - y < 120 and abs(x - px) < 340]
+                 if 0 < py - y < 120 and abs(x - px) < 220
+                 and not self._is_ui_word(t)]
         above.sort(key=lambda r: py - r[2])
         # Строку САМОГО промпта тоже отдаём справочнику: OCR часто склеивает
         # имя и слово Purchase в одну строку («gangster footera $4k purchase»),
@@ -3361,7 +3410,9 @@ class Farmer:
             # промпта, увеличить и загнать в чёрно-белое по порогу.
             boosted = self._read_prompt_boosted(px, py)
             if boosted:
-                item = catalog().match_any(boosted)
+                # Порог ниже общего: усиленный проход уже очищен от UI-слов, а
+                # целей на ленте единицы — снапаем к каталогу увереннее.
+                item = catalog().match_any(boosted, cutoff=0.62)
                 if item is None:
                     log.info("промпт есть, но имя не опознано даже с подсветкой: %s",
                              " | ".join(boosted[:4]))
@@ -3593,6 +3644,27 @@ class Farmer:
                 return it.name, sat
         return None, sat
 
+    # Полоса требования «$X / $Y» нарисована стилизованным шрифтом, и OCR
+    # читает «100M» кириллицей как «шом» — цифры не вытащить (грабля кириллицы,
+    # [[brainrot-vision-traps]]). Зато полоса ЗАПОЛНЯЕТСЯ зелёным слева направо
+    # по мере накопления: касса набрана — ярко-зелёная целиком (доля зелёного
+    # ~0.71 с учётом белых цифр поверх), пусто — чёрная (0.0). Замерено на
+    # кадрах 06.09: $100M/$100M даёт 0.713, $35K/$350M — 0.000. Читаем кассу по
+    # цвету, а не по цифрам.
+    REQ_BAR = (0.30, 0.543, 0.71, 0.577)   # x0,y0,x1,y1 полосы в долях кадра
+    REQ_BAR_FULL = 0.60                     # порог «касса набрана» по зелёному
+
+    def _requirement_bar_green(self, frame) -> float:
+        import cv2
+        h, w = frame.shape[:2]
+        x0, y0, x1, y1 = self.REQ_BAR
+        bar = frame[int(h * y0):int(h * y1), int(w * x0):int(w * x1)]
+        if bar.size == 0:
+            return 0.0
+        hsv = cv2.cvtColor(bar, cv2.COLOR_BGR2HSV)
+        m = cv2.inRange(hsv, (35, 80, 80), (90, 255, 255))
+        return float(m.mean()) / 255.0
+
     def read_rebirth_window(self) -> dict:
         """Что написано в окне ребёрна: сумма и именные брейнроты.
 
@@ -3642,7 +3714,11 @@ class Farmer:
         # по именам и уходит в цели закупа, а имени у неё нет. Но ребёрн она
         # обязана запретить — это и есть та самая дыра из 07:37.
         unreadable = sum(1 for n, s in boxes if not n and s < self.DARK_ICON)
+        # Касса по заполнению полосы — когда цифры не читаются (обычно).
+        bar_green = self._requirement_bar_green(frame)
+        cash_full = bar_green >= self.REQ_BAR_FULL
         return {"have_cash": have, "need_cash": need_cash,
+                "cash_full": cash_full, "bar_green": round(bar_green, 3),
                 "need_items": missing, "items_all": names,
                 "item_saturation": sats, "unreadable_dark": unreadable,
                 "boxes": len(boxes), "lines": lines}
@@ -3688,6 +3764,15 @@ class Farmer:
             have = self.read_cash()
         if info["need_cash"] and have is not None and have < info["need_cash"]:
             log.info("рано: накоплено %.0f из %.0f", have, info["need_cash"])
+            self.dismiss_modals()
+            return False
+        # Цифры «$X / $Y» OCR корёжит кириллицей («шом»), поэтому когда суммы
+        # прочитать не удалось — судим о кассе по ЗАПОЛНЕНИЮ полосы. Пустая
+        # полоса = касса не набрана, ребёрн игра всё равно откажет. Раньше при
+        # `need_cash=None` денежный порог просто выключался (грабля из TASKS).
+        if not info["need_cash"] and not info.get("cash_full", True):
+            log.info("рано: полоса требования не заполнена (зелёного %.2f)",
+                     info.get("bar_green", 0.0))
             self.dismiss_modals()
             return False
 
