@@ -251,7 +251,11 @@ def cmd_launch(args) -> None:
     mutex = SingletonMutex()
     mutex.acquire()
     session = Session(account=account, settings=s)
-    if session.launch():
+    # Склад по умолчанию идёт в САМЫЙ ПУСТОЙ сервер: воровство — главный
+    # потолок фермы (за ночь 06.09 дверь была открыта 5169 с, а сервер был на
+    # 27 человек). В сервере на ≤3 игрока красть почти некому. `--busy`
+    # выключает это, если нужен конкретный людный сервер.
+    if session.launch(тихий=not args.busy):
         print(f"{account.name}: в игре, hwnd={session.window.hwnd}")
         print("Мьютекс отпускается вместе с процессом — для постоянной работы гоняй `up`.")
     else:
@@ -779,7 +783,7 @@ def cmd_desk(args) -> None:
         print("Дальше: run.py desk show --seconds 150 — посмотреть и нажать Play.")
 
     elif args.action == "show":
-        desktop.show(args.seconds)
+        desktop.show(args.seconds, args.name or desktop.NAME)
         print("Экран вернулся на твой стол.")
 
     elif args.action == "bot":
@@ -840,6 +844,69 @@ def cmd_desk(args) -> None:
             print(f"  кругов {d.get('кругов')}, локов {d.get('локов')}, "
                   f"покупок {d.get('покупок')}, кэш {d.get('кэш')}")
             print(f"  последнее: {d.get('последнее')} ({d.get('обновлено')})")
+
+
+def cmd_fleet(args) -> None:
+    """Флот складов: по аккаунту на свой рабочий стол, все параллельно.
+
+    Настоящий параллельный ввод на одной машине: у каждого стола Windows своя
+    очередь ввода, поэтому N ферм не дерутся за курсор (замок ввода теперь
+    пер-стол, см. `single._имя_стола`). Клиент и ферму на каждом столе поднимает
+    `scripts/desk_worker.py` — он бежит НА своём столе, где `EnumWindows` видит
+    только его окно. Твой видимый стол при этом свободен; заглянуть в один —
+    `run.py desk show --name <стол>`.
+    """
+    import sys as _sys
+    import time as _time
+    from pathlib import Path as _Path
+
+    from . import desktop
+    from .mutex import SingletonMutex
+    s = _settings()
+    root = _Path(__file__).resolve().parents[2]
+
+    if args.accounts:
+        names = [n.strip() for n in args.accounts.split(",") if n.strip()]
+        accounts = [s.account(n) for n in names]
+    else:
+        accounts = list(s.enabled_accounts)
+    accounts = [a for a in accounts if a.cookie]
+    if not accounts:
+        _sys.exit("нет аккаунтов с живой кукой — вставь .ROBLOSECURITY в "
+                  "config/accounts.json (у sklad-1 кука 401, у farm-1 пусто)")
+
+    # Мьютекс держит ЭТОТ процесс, пока флот жив: пока хоть один хэндл открыт,
+    # Roblox пускает второй, третий, ... клиент.
+    mutex = SingletonMutex()
+    mutex.acquire()
+    quiet = "0" if args.busy else "1"
+    desks = []
+    for a in accounts:
+        desk = "brainbot-%s" % a.name
+        desktop.ensure(desk)
+        worker = root / "scripts" / "desk_worker.py"
+        inner = ('cd /d "%s" && set PYTHONIOENCODING=utf-8 && '
+                 '"%s" "%s" %s %s %s %s %s > var\\fleet_%s.txt 2>&1'
+                 % (root, _sys.executable, worker, a.name, int(args.minutes),
+                    int(args.income), int(args.rebirths), quiet, a.name))
+        desktop.spawn("cmd /c %s" % inner, name=desk)
+        desks.append(desk)
+        print("[%s] стол %s поднят, воркер пошёл (лог var/fleet_%s.txt)"
+              % (a.name, desk, a.name))
+        _time.sleep(args.stagger)
+
+    print("\nФлот из %d складов запущен параллельно." % len(desks))
+    print("Заглянуть в один:  run.py desk show --name <стол> --seconds 60")
+    print("Столы:", ", ".join(desks))
+    print("Статус каждого — var/farm_status.json на его столе; логи — "
+          "var/fleet_<аккаунт>.txt.")
+    print("\nЭто окно держит мьютекс мультиинстанса — НЕ закрывай, пока нужен "
+          "флот. Ctrl+C отпускает мьютекс (клиенты и фермы остаются жить).")
+    try:
+        while True:
+            _time.sleep(30)
+    except KeyboardInterrupt:
+        print("флот отпущен")
 
 
 def cmd_optimize(args) -> None:
@@ -1086,6 +1153,9 @@ def main(argv: list[str] | None = None) -> None:
 
     sp = sub.add_parser("launch", help="поднять клиент под аккаунтом")
     sp.add_argument("account")
+    sp.add_argument("--busy", action="store_true",
+                    help="не искать пустой сервер (по умолчанию склад идёт в "
+                         "самый малолюдный: воровать некому)")
     sp.set_defaults(fn=cmd_launch)
 
     sp = sub.add_parser("desk", help="отдельный рабочий стол: бот играет, "
@@ -1100,7 +1170,22 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--income", type=float, default=3000.0, help="для bot: порог дохода")
     sp.add_argument("--cmd", default="", help="для spawn: что запустить")
     sp.add_argument("--browser", default="", help="для browser: путь к браузеру")
+    sp.add_argument("--name", default=None,
+                    help="имя стола (для show/флота, напр. brainbot-raven)")
     sp.set_defaults(fn=cmd_desk)
+
+    sp = sub.add_parser("fleet", help="флот складов: аккаунт на свой стол, все "
+                                      "параллельно на одной машине")
+    sp.add_argument("--accounts", default=None,
+                    help="список через запятую; по умолчанию все с живой кукой")
+    sp.add_argument("--minutes", type=float, default=400.0)
+    sp.add_argument("--income", type=float, default=100.0)
+    sp.add_argument("--rebirths", type=int, default=40)
+    sp.add_argument("--stagger", type=float, default=25.0,
+                    help="пауза между подъёмом столов, с")
+    sp.add_argument("--busy", action="store_true",
+                    help="не искать пустой сервер (по умолчанию в самый тихий)")
+    sp.set_defaults(fn=cmd_fleet)
 
     sp = sub.add_parser("optimize", help="настройки клиента, ядра, приоритеты")
     sp.add_argument("--fps", type=int, help="потолок кадров (по умолчанию из конфига)")
