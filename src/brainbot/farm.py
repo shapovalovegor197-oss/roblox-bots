@@ -666,19 +666,41 @@ class Farmer:
 
         prev = scene()
         rates = []
+        # Замеры складываем ЦЕЛИКОМ, а не только годные. «0 годных из 8» —
+        # приговор без диагноза: непонятно, сцена не сдвинулась (камера не
+        # поворачивается вовсе) или сдвинулась, но корреляция шумная. Вечером
+        # 06.09 это стоило часа: замер провалился дважды, бот всю ночь работал
+        # на прежней константе, и наведение не сходилось 88 раз за 54 минуты
+        # против 13 раз за семь часов ночи 05.09.
+        сдвиги, отклики = [], []
         for _ in range(tries):
             self.hand.look(step, 0)
             time.sleep(0.45)
             now = scene()
             (dx, _dy), resp = cv2.phaseCorrelate(prev, now)
             prev = now
+            сдвиги.append(abs(dx))
+            отклики.append(resp)
             if resp < 0.05 or abs(dx) < 5:
                 continue
             rates.append(abs(dx) * deg_per_px / step)
+        self.camera_turns = bool(сдвиги) and max(сдвиги) >= 5
         if len(rates) < 3:
             log.warning("поворот замерить не вышло (%d годных из %d) — "
-                        "оставляю прежнюю меру %.4f град/ед",
-                        len(rates), tries, self.hand.SMALL_DEG_PER_UNIT)
+                        "оставляю прежнюю меру %.4f град/ед; сдвиг сцены "
+                        "макс %.1f px (нужно >=5), отклик макс %.2f (нужно >=0.05)",
+                        len(rates), tries, self.hand.SMALL_DEG_PER_UNIT,
+                        max(сдвиги) if сдвиги else 0.0,
+                        max(отклики) if отклики else 0.0)
+            if not self.camera_turns:
+                # Это не «шумно замерилось», это камера стоит. Дальше не
+                # поможет ни наведение, ни дорога к плите: весь прогон уйдёт
+                # в промахи, как вечером 06.09.
+                log.warning("КАМЕРА НЕ ПОВОРАЧИВАЕТСЯ: за %d протяжек по %d "
+                            "единиц сцена не сдвинулась ни разу. Смотреть в "
+                            "клиенте: шифт-лок (в настройках input.shift_lock "
+                            "стоит %s), ползунок Mouse Sensitivity, фокус окна",
+                            tries, step, self.hand.shift_lock)
             return None
         rates.sort()
         rate = rates[len(rates) // 2]

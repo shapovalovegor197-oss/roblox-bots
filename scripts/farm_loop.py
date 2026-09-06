@@ -309,9 +309,19 @@ def read_goals() -> None:
         # закрытия окна), охота не включилась, и бот пошёл запирать пустую базу.
         if info["have_cash"] is not None and info["need_cash"]:
             state["денег_хватает"] = info["have_cash"] >= info["need_cash"]
+        elif info.get("bar_green") is not None:
+            # Цифры «$ 100M / $ 350M» OCR корёжит в кириллицу («100M» -> «шом»),
+            # и тогда обе стороны сравнения None — ответ «денег хватает: None»
+            # держался всю ночь 05.09. Полоса требования при этом ЗАПОЛНЯЕТСЯ
+            # зелёным и читается цветом (замер 06.09: полная 0.713, пустая
+            # 0.000). Гейт самого ребёрна на неё уже переведён (8c32b63) —
+            # доводим до круга, иначе охота не включается никогда.
+            state["денег_хватает"] = bool(info.get("cash_full"))
         remember_goals()
-        say("цели: %s, нужно $%s, накоплено $%s"
-            % (", ".join(state["цели"]), info["need_cash"], info["have_cash"]))
+        say("цели: %s, нужно $%s, накоплено $%s (полоса %.3f, касса %s)"
+            % (", ".join(state["цели"]), info["need_cash"], info["have_cash"],
+               info.get("bar_green") or 0.0,
+               "набрана" if info.get("cash_full") else "нет"))
     except Exception as exc:                                # noqa: BLE001
         say("цели прочитать не вышло: %s" % exc)
 
@@ -931,6 +941,23 @@ LOCK_TRIES = 4
 DOOR_ALARM = 20.0
 
 
+def учесть_дверь(opened_at: float) -> None:
+    """Прибавить к сумме ТОЛЬКО неучтённые секунды открытой двери.
+
+    Раньше сюда шло `время_сейчас - opened_at`, то есть ВСЁ время с истечения
+    лока. Но `opened_at` берётся из `_лок_истёк`, а он при неудачном локе не
+    двигается: круг заканчивался, начинался следующий, и та же самая минута
+    прибавлялась заново. Замер 06.09: прогон длился 3248 с, а сумма показывала
+    8648.9 с — больше, чем прошло времени вообще. По такому числу нельзя ни
+    судить о ночи, ни сравнивать прогоны, а именно им мы и мерили воровство.
+    """
+    учтено = max(state.get("_дверь_учтено_до") or opened_at, opened_at)
+    теперь = time.time()
+    state["дверь_открыта_всего"] = round(
+        state.get("дверь_открыта_всего", 0.0) + max(0.0, теперь - учтено), 1)
+    state["_дверь_учтено_до"] = теперь
+
+
 def ensure_locked() -> bool:
     """Дверь закрыта? Если нет — закрыть, и только потом что-то делать.
 
@@ -966,8 +993,7 @@ def ensure_locked() -> bool:
             state["локи_секунд"].append(round(time.time() - t0, 1))
             state["_лок_истёк"] = time.time() + left
             state["дверь_открыта_с"] = открыта
-            state["дверь_открыта_всего"] = round(
-                state.get("дверь_открыта_всего", 0.0) + открыта, 1)
+            учесть_дверь(opened_at)
             state.setdefault("дверь_открыта_история", []).append(открыта)
             say("ЗАПЕРТО на %d с (за %.1f с), дверь была открыта %.1f с, "
                 "всего за прогон %.0f с"
@@ -981,8 +1007,7 @@ def ensure_locked() -> bool:
             f.shot("door_open")
         time.sleep(1.5)
     открыта = round(max(0.0, time.time() - opened_at), 1)
-    state["дверь_открыта_всего"] = round(
-        state.get("дверь_открыта_всего", 0.0) + открыта, 1)
+    учесть_дверь(opened_at)
     say("ДВЕРЬ НЕ ЗАКРЫЛАСЬ за %.0f с и %d заходов — к ленте НЕ иду, "
         "начинаю круг заново" % (открыта, LOCK_TRIES))
     f.shot("door_stuck")
@@ -1158,9 +1183,36 @@ state["кэш_старт"] = state["кэш"]
 say("кэш на старте: %s, денег хватает: %s"
     % (state["кэш"], state.get("денег_хватает")))
 save()
+def держать_размер_окна() -> None:
+    """Вернуть окно к рабочему размеру, если оно съехало ПОСЛЕ старта.
+
+    Проверки перед первым кадром мало. Замер 06.09: лаунчер выставил 1280x720
+    в 20:00:24, эта проверка в 20:00:34 увидела рабочее окно и промолчала, а к
+    20:04 клиент стоял уже 800x599 — Roblox применяет свой сохранённый размер,
+    когда игра догрузится. Доли кадра после этого показывают мимо, и прогон
+    идёт вслепую до самого утра.
+    """
+    try:
+        box = f.window.client_box()
+        нужно = (int(s.window["width"]), int(s.window["height"]))
+        if (box.width, box.height) == нужно:
+            return
+        import ctypes
+        from ctypes import wintypes as _wt2
+        r = _wt2.RECT()
+        ctypes.windll.user32.GetWindowRect(f.window.hwnd, ctypes.byref(r))
+        f.window.move_resize(r.left, r.top, *нужно)
+        новое = f.window.client_box()
+        say("окно съехало на %dx%d — вернул %dx%d"
+            % (box.width, box.height, новое.width, новое.height))
+    except Exception as exc:                                # noqa: BLE001
+        say("размер окна проверить не вышло: %s" % exc)
+
+
 end = time.time() + MINUTES * 60
 while time.time() < end:
     try:
+        держать_размер_окна()
         circle()
     except KeyboardInterrupt:
         break
