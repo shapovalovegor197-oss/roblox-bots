@@ -95,7 +95,8 @@ def auth_ticket(account: Account) -> str:
 
 
 def build_launch_uri(ticket: str, place_id: int, browser_tracker_id: str = "0",
-                     job_id: str | None = None) -> str:
+                     job_id: str | None = None, link_code: str | None = None,
+                     access_code: str | None = None) -> str:
     """URI запуска клиента. job_id — заход в КОНКРЕТНЫЙ экземпляр сервера.
 
     Это штатный механизм Roblox, а не эксплойт: PlaceLauncher умеет не только
@@ -103,8 +104,31 @@ def build_launch_uri(ticket: str, place_id: int, browser_tracker_id: str = "0",
     Нужно, чтобы посадить несколько своих аккаунтов в ОДИН сервер — без этого
     передача кражей (scenarios/steal.py) невозможна. Чужие автоджойнеры делают то же
     самое изнутри игры через TeleportToPlaceInstance и потому требуют экзекьютора.
+
+    `link_code` — заход в ПРИВАТНЫЙ сервер по коду из ссылки-приглашения
+    (`...?privateServerLinkCode=XXXX`), третий штатный запрос `RequestPrivateGame`.
+    Приватка у Steal a Brainrot доступна: `private-servers/enabled-in-universe`
+    отвечает `privateServersEnabled: true` (проверено 11.09.2026), а список
+    `servers/VIP` отдаёт живые приватные сервера. Поле `createVipServersAllowed` в
+    старом games-API при этом `false` — на него ориентироваться нельзя, оно врёт.
+
+    Зачем это нам. В публичном сервере пустой комнаты не бывает (все сто самых
+    тихих отдают playing: 1), а приватка — единственный способ получить комнату,
+    где кроме нас и покупателя НИКОГО, то есть выполнить условие вердикта
+    «состав сервера = наш бот и контрагент» и не отдать товар постороннему.
     """
-    if job_id:
+    if link_code or access_code:
+        parts = [
+            f"{PLACE_LAUNCHER}?request=RequestPrivateGame",
+            f"browserTrackerId={browser_tracker_id}",
+            f"placeId={place_id}",
+        ]
+        if access_code:
+            parts.append(f"accessCode={access_code}")
+        if link_code:
+            parts.append(f"linkCode={link_code}")
+        launcher_url = "&".join(parts)
+    elif job_id:
         launcher_url = (
             f"{PLACE_LAUNCHER}?request=RequestGameJob"
             f"&browserTrackerId={browser_tracker_id}"
@@ -131,7 +155,8 @@ def build_launch_uri(ticket: str, place_id: int, browser_tracker_id: str = "0",
 
 
 def launch(account: Account, place_id: int, apply_fflags: bool = True,
-           target_fps: int | None = None, job_id: str | None = None) -> int:
+           target_fps: int | None = None, job_id: str | None = None,
+           link_code: str | None = None) -> int:
     """Поднимает клиент и возвращает PID процесса.
 
     Мьютекс ROBLOX_singletonMutex к этому моменту должен быть уже захвачен,
@@ -147,15 +172,16 @@ def launch(account: Account, place_id: int, apply_fflags: bool = True,
         write_fflags(flags)
 
     exe = find_player_exe()
-    uri = build_launch_uri(auth_ticket(account), place_id, job_id=job_id)
+    uri = build_launch_uri(auth_ticket(account), place_id, job_id=job_id,
+                           link_code=link_code)
     proc = subprocess.Popen(
         [str(exe), uri],
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    log.info("[%s] клиент запущен, pid=%s, place=%s%s", account.name, proc.pid, place_id,
-             f", сервер {job_id}" if job_id else "")
+    куда = f", сервер {job_id}" if job_id else (", приватка" if link_code else "")
+    log.info("[%s] клиент запущен, pid=%s, place=%s%s", account.name, proc.pid, place_id, куда)
     return proc.pid
 
 
