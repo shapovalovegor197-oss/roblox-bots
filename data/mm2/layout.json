@@ -1,0 +1,54 @@
+{
+  "_": "Геометрия обмена Murder Mystery 2 для окна 1280x720 (клиентская область).",
+  "_источник": "Снято с кадров живого прохода 13.09.2026 (var/screens/mm2_*). Координаты — центры элементов в пикселях кадра, они же аргументы hand.click.",
+  "_размер_окна": [1280, 720],
+  "_важно": "Всё привязано к 1280x720. При другом размере окна доли поедут — сперва apply_window_layout, см. roblox-window-size-is-calibration.",
+
+  "leaderboard": {
+    "_": "Правая панель со списком игроков (открывается по Tab). OCR по этой области даёт строки ников; клик по строке открывает карточку игрока.",
+    "region": [1045, 22, 1275, 295],
+    "toggle_key": "tab"
+  },
+
+  "player_card": {
+    "_": "Карточка выезжает СЛЕВА от лидерборда и выровнена по строке, по которой кликнули. Поэтому X кнопок фиксирован, а Y считается от Y строки игрока.",
+    "close_x_abs": 848,
+    "profile_x_abs": 963,
+    "trade_x_abs": 963,
+    "profile_dy_from_row": 47,
+    "trade_dy_from_row": 95,
+    "_проверка": "invite: строка Dara74535 y=100 -> Trade y=202 (+95, x=963); peer_card: строка shapovaluv y=65 -> Trade y=167 (+95, x=963)."
+  },
+
+  "trade_window": {
+    "_": "Окно обмена. Якорь открытости — шаблон mm2_your_offer (заголовок YOUR OFFER).",
+    "your_offer_slots": [[711, 233], [820, 233], [930, 233], [1039, 233]],
+    "their_offer_slots": [[711, 412], [820, 412], [930, 412], [1039, 412]],
+    "your_offer_title_region": [655, 130, 860, 165],
+    "their_offer_title_region": [655, 308, 1100, 345],
+    "partner_status_region": [655, 388, 1100, 425],
+    "confirm_button": [875, 532],
+    "confirm_text_region": [760, 512, 995, 555],
+    "decline_button": [875, 612],
+
+    "inventory": {
+      "_": "Левая половина окна: вкладки Weapons/Pets, поиск и сетка предметов 4 в ряд.",
+      "tab_weapons": [219, 287],
+      "tab_pets": [312, 287],
+      "search_field": [475, 285],
+      "grid_cols_x": [233, 344, 455, 566],
+      "grid_rows_y": [372, 514],
+      "first_cell": [233, 372],
+      "label_dy": 70,
+      "_": "Подпись предмета (название/редкость) — под иконкой, примерно +70px по Y от центра ячейки."
+    }
+  },
+
+  "confirm_states": {
+    "_": "Что читаем в confirm_text_region, чтобы понять фазу подтверждения.",
+    "counting": ["please wait", "before accepting"],
+    "ready": ["accept"],
+    "are_you_sure": ["are you sure"]
+  },
+  "partner_ready_text": ["other player has accepted"]
+}
