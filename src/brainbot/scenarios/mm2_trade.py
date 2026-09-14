@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from .. import ocr
 from ..log import get
 from ..session import Session
@@ -109,6 +111,63 @@ def _slot_label(session: Session, slot_xy: tuple[int, int], label_dy: int = 56) 
     return ocr.all_text(session.frame(), region).strip()
 
 
+# --- редкость предмета по цвету плашки ---
+#
+# StarPets/MM2 переиспользуют имя: «Makeshift» бывает и ножом, и пистолетом с разной
+# редкостью и ценой. В игре их различает ЦВЕТ плашки подписи. Выбор предмета только по
+# имени (клик по первой ячейке) мог выложить не тот вариант — здесь фильтр по редкости.
+
+def _cell_centers(L: dict) -> list[tuple[int, int]]:
+    inv = L["trade_window"]["inventory"]
+    return [(x, y) for y in inv["grid_rows_y"] for x in inv["grid_cols_x"]]
+
+
+def _rgb_at(frame: np.ndarray, x: int, y: int, dx: int = 38, dy: int = 9) -> tuple[int, int, int]:
+    """Медианный цвет плашки. frame — BGR из capture, возвращаем RGB (как в layout)."""
+    patch = frame[max(0, y - dy):y + dy, max(0, x - dx):x + dx]
+    if patch.size == 0:
+        return (0, 0, 0)
+    b = int(np.median(patch[:, :, 0]))
+    g = int(np.median(patch[:, :, 1]))
+    r = int(np.median(patch[:, :, 2]))
+    return (r, g, b)
+
+
+def classify_rarity(rgb: tuple[int, int, int], L: dict) -> str | None:
+    """Ближайшая редкость из палитры (евклид по RGB), либо None, если дальше порога."""
+    pal = L.get("rarity", {}).get("colors", {})
+    thr = L.get("rarity", {}).get("match_threshold", 70)
+    best, best_d = None, 1e18
+    for name, c in pal.items():
+        d = sum((a - b) ** 2 for a, b in zip(rgb, c)) ** 0.5
+        if d < best_d:
+            best, best_d = name, d
+    return best if best_d <= thr else None
+
+
+def _matching_cells(session: Session, item_name: str, L: dict) -> list[dict]:
+    """Ячейки инвентаря с подписью, совпадающей по имени: их xy, текст, цвет, редкость.
+
+    Один кадр на весь скан — иначе N grab'ов по числу ячеек.
+    """
+    inv = L["trade_window"]["inventory"]
+    dy = inv.get("label_dy", 70)
+    frame = session.frame()
+    want = _norm(item_name)
+    out: list[dict] = []
+    for (x, y) in _cell_centers(L):
+        ly = y + dy
+        txt = ocr.all_text(frame, (x - 60, ly - 15, x + 60, ly + 15)).strip()
+        if not txt:
+            continue
+        got = _norm(txt)
+        if want and want not in got and got not in want:
+            continue
+        rgb = _rgb_at(frame, x, ly)
+        out.append({"xy": (x, y), "text": txt, "rgb": rgb, "rarity": classify_rarity(rgb, L)})
+    return out
+
+
 def _confirm_phase(session: Session, L: dict) -> str:
     """Фаза кнопки подтверждения: counting / ready / are_you_sure / unknown.
 
@@ -158,21 +217,61 @@ def open_trade(session: Session, nickname: str, L: dict, timeout: float = 15.0) 
     log.info("[%s] окно обмена с %s открыто", session.account.name, nickname)
 
 
-def offer_item(session: Session, item_name: str, L: dict) -> bool:
-    """Найти предмет по названию и выложить в свою половину. True — слот занялся."""
+def offer_item(session: Session, item_name: str, L: dict,
+               rarity: str | None = None, qty: int = 1) -> int:
+    """Выложить предмет(ы) в свою половину. Возвращает, сколько единиц реально легло.
+
+    Выбор ячейки НЕ по «первой попавшейся»: среди совпавших по имени берём нужную
+    редкость по цвету плашки (`rarity`), иначе имя-двойник разной редкости ушло бы не то.
+    `qty` — стак: кладём по одной (после выкладки список перестраивается) до `qty` или
+    пока не кончатся слоты своей половины (их 4).
+    """
     hand = session.hand
     inv = L["trade_window"]["inventory"]
+    slots = [tuple(s) for s in L["trade_window"]["your_offer_slots"]]
+    want_r = rarity.strip().lower() if rarity else None
+
     hand.click(*inv["search_field"])
     hand.clear_field()
     hand.type_text(item_name)
     time.sleep(0.8)                        # игре нужно время отфильтровать
-    hand.click(*inv["first_cell"])         # первая карточка результата
-    time.sleep(0.5)
-    ok = _slot_filled(session, tuple(L["trade_window"]["your_offer_slots"][0]),
-                      inv.get("label_dy", 56))
-    log.info("[%s] выкладка %r: слот %s", session.account.name, item_name,
-             "занят" if ok else "ПУСТ")
-    return ok
+
+    placed = 0
+    target = max(1, min(int(qty), len(slots)))
+    for _ in range(target):
+        filled = sum(1 for s in slots if _slot_filled(session, s))
+        if filled >= len(slots):
+            break                          # своя половина заполнена
+        cands = _matching_cells(session, item_name, L)
+        if not cands:
+            break
+        if want_r:
+            pool = [c for c in cands if c["rarity"] == want_r]
+            if not pool:
+                log.warning("[%s] %r редкости %r нет; в инвентаре: %s",
+                            session.account.name, item_name, want_r,
+                            [(c["text"], c["rarity"]) for c in cands])
+                break
+            chosen = pool[0]
+        else:
+            variants = {c["rarity"] for c in cands}
+            if len(variants) > 1:
+                log.warning("[%s] %r — несколько редкостей %s; беру первую. Задай rarity, "
+                            "чтобы не выложить не тот вариант", session.account.name,
+                            item_name, variants)
+            chosen = cands[0]
+
+        hand.click(*chosen["xy"])
+        time.sleep(0.5)
+        if sum(1 for s in slots if _slot_filled(session, s)) <= filled:
+            log.warning("[%s] клик по %r (%s) не занял слот",
+                        session.account.name, item_name, chosen["rarity"])
+            break
+        placed += 1
+
+    log.info("[%s] выложено %d× %r%s", session.account.name, placed, item_name,
+             f" [{rarity}]" if rarity else "")
+    return placed
 
 
 def wait_their_offer(session: Session, L: dict, timeout: float,
@@ -241,16 +340,23 @@ def confirm(session: Session, L: dict, wait_partner_sec: float = 180.0,
 # --- операции ---
 
 def give(session: Session, nickname: str, item_name: str, L: dict | None = None,
+         rarity: str | None = None, qty: int = 1,
          wait_partner_sec: float = 180.0) -> TradeResult:
-    """Отдать один предмет игроку nickname."""
+    """Отдать предмет(ы) игроку nickname. `rarity` различает имена-двойники, `qty` — стак."""
     L = L or load_layout()
     name = session.account.name
-    log.info("[%s] ОТДАЮ %s → %s", name, item_name, nickname)
+    log.info("[%s] ОТДАЮ %d× %s%s → %s", name, qty, item_name,
+             f" [{rarity}]" if rarity else "", nickname)
     inv_before = session.shot("mm2_inv_before")
     try:
         open_trade(session, nickname, L)
-        if not offer_item(session, item_name, L):
-            raise TradeAborted("выкладка", f"{item_name!r} не выложился (нет в инвентаре?)")
+        placed = offer_item(session, item_name, L, rarity=rarity, qty=qty)
+        if not placed:
+            raise TradeAborted("выкладка",
+                               f"{item_name!r}{f' [{rarity}]' if rarity else ''} не выложился "
+                               f"(нет в инвентаре / не та редкость?)")
+        if placed < qty:
+            log.warning("[%s] выложено %d из %d запрошенных", name, placed, qty)
         res = confirm(session, L, wait_partner_sec=wait_partner_sec)
         res.proof = f"{inv_before} | {res.proof}"
         return res
@@ -276,6 +382,33 @@ def receive(session: Session, nickname: str, expect_item: str | None = None,
     except TradeAborted as e:
         log.error("[%s] прервано на «%s»: %s", name, e.stage, e.message)
         return TradeResult(False, e.stage, e.message)
+
+
+def survey_inventory(session: Session, item_name: str | None = None,
+                     L: dict | None = None) -> dict:
+    """Снять инвентарь окна обмена: имя, цвет плашки и распознанная редкость каждой ячейки.
+
+    Для калибровки палитры редкостей на живой игре. С `item_name` сначала вбивает поиск —
+    удобно проверить, как различаются имена-двойники. Кликов по предметам не делает.
+    """
+    L = L or load_layout()
+    inv = L["trade_window"]["inventory"]
+    if item_name:
+        session.hand.click(*inv["search_field"])
+        session.hand.clear_field()
+        session.hand.type_text(item_name)
+        time.sleep(0.8)
+    dy = inv.get("label_dy", 70)
+    frame = session.frame()
+    cells = []
+    for (x, y) in _cell_centers(L):
+        ly = y + dy
+        txt = ocr.all_text(frame, (x - 60, ly - 15, x + 60, ly + 15)).strip()
+        if not txt:
+            continue
+        rgb = _rgb_at(frame, x, ly)
+        cells.append({"xy": (x, y), "text": txt, "rgb": rgb, "rarity": classify_rarity(rgb, L)})
+    return {"shot": str(session.shot("mm2_inv_survey")), "cells": cells}
 
 
 def survey(session: Session, L: dict | None = None) -> dict:

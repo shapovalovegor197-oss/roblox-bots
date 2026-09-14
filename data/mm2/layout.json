@@ -50,5 +50,17 @@
     "ready": ["accept"],
     "are_you_sure": ["are you sure"]
   },
-  "partner_ready_text": ["other player has accepted"]
+  "partner_ready_text": ["other player has accepted"],
+
+  "rarity": {
+    "_": "Редкость предмета = цвет плашки его подписи в инвентаре. Различает предметы с ОДИНАКОВЫМ именем (Makeshift нож/пистолет и т.п.). Цвета — медиана RGB из живого кадра mm2_offer_rune (проверено: одинаковая редкость даёт идентичный RGB ±3). ИМЕНА редкостей предположительные — поправить калибровкой через survey_inventory; цвета — факт.",
+    "colors": {
+      "common": [94, 94, 94],
+      "rare": [4, 0, 179],
+      "legendary": [150, 0, 204],
+      "godly": [211, 9, 89]
+    },
+    "match_threshold": 70,
+    "_свотч": "медиана берётся по плашке подписи: центр ячейки x, y = центр + inventory.label_dy, окно ±38x±9 px"
+  }
 }
