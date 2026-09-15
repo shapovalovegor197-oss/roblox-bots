@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import config, log, roblox_api
+from . import config, log, mm2_bridge, roblox_api
 from .capture import grab, save
 from .capture import grab as capture_grab
 from .mutex import SingletonMutex
@@ -1026,6 +1026,22 @@ def cmd_user(args) -> None:
     print(f"presence: {state}{here}  {pres.last_location}")
 
 
+def cmd_mm2(args) -> None:
+    """Запуск движка MM2. Механика живёт в roblox-swap, здесь только вызов.
+
+    Без инструмента печатаем, что есть: человеку нужен список, а не ошибка
+    разбора аргументов.
+    """
+    if not args.tool:
+        print("MM2: механика в отдельном проекте roblox-swap, здесь только запуск.")
+        for имя, зачем in sorted(mm2_bridge.TOOLS.items()):
+            print(f"   {имя:<12}{зачем}")
+        print()
+        print("   python run.py mm2 deal --hwnd <id> --scan")
+        return
+    sys.exit(mm2_bridge.run(args.tool, args.rest, engine=args.engine))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="brainbot", description="Боты Steal a Brainrot")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1204,6 +1220,13 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("user", help="ник → id и presence")
     sp.add_argument("nickname")
     sp.set_defaults(fn=cmd_user)
+
+    sp = sub.add_parser("mm2", help="MM2: запуск инструментов движка из roblox-swap")
+    sp.add_argument("tool", nargs="?", choices=sorted(mm2_bridge.TOOLS),
+                    help="инструмент движка")
+    sp.add_argument("rest", nargs=argparse.REMAINDER, help="его аргументы как есть")
+    sp.add_argument("--engine", help="путь к roblox-swap, если он не рядом")
+    sp.set_defaults(fn=cmd_mm2)
 
     args = p.parse_args(argv)
     args.fn(args)
