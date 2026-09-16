@@ -295,6 +295,34 @@ class Hand:
             return
         pydirectinput.scroll(clicks, interval=interval)
 
+    def replay_timeline(self, events) -> None:
+        """Keep simultaneous keys and relative mouse moves on one clock."""
+        from .playback import play
+        if self.direct:
+            raise ValueError("Запись Raw Input повторяется только через focus backend")
+        self.ensure_focus()
+        box = self.win.client_box()
+        self.move(box.width // 2, box.height // 2)
+
+        def interrupted():
+            return (not self.win.is_foreground()
+                    or (self._activity is not None
+                        and self._activity.seconds_since() < self.yield_grace))
+
+        def send(kind, a, b):
+            if kind == "turn":
+                # No smoothing or integer subdivision: small deltas must survive.
+                pydirectinput.moveRel(int(a), int(b), relative=True,
+                                      disable_mouse_acceleration=True)
+            elif a in ("ПКМ", "ЛКМ"):
+                fn = pydirectinput.mouseDown if b == "вниз" else pydirectinput.mouseUp
+                fn(button="right" if a == "ПКМ" else "left")
+            else:
+                fn = pydirectinput.keyDown if b == "вниз" else pydirectinput.keyUp
+                fn(a)
+
+        play(events, send, interrupted)
+
     def jump(self) -> None:
         self.press("space")
 
@@ -481,6 +509,25 @@ class Hand:
             self.pitch_top()
             time.sleep(0.2)
         self.look(0, -abs(back))
+
+    def pitch_sky(self) -> None:
+        """Упереть камеру в НЕБО: ровный фон под наложенным интерфейсом.
+
+        Знак здесь обратный к pitch_top по той же мерке: мышь ВВЕРХ (dy < 0)
+        заваливает камеру под персонажа и в небо. Для вида сверху это была
+        ошибка, для чтения интерфейса — то, что нужно.
+
+        Зачем вообще: кнопки обмена в MM2 нарисованы поверх мира, и OCR читает
+        их вместе с тем, что за ними. На пёстром фоне — чужие постройки, игроки,
+        текстуры — подпись расплывается, и клик уходит мимо. Небо даёт одну
+        заливку, и распознавать становится нечего, кроме самой кнопки.
+
+        Кусками по той же причине, что и pitch_top: длинную протяжку игра теряет
+        целиком. Упор обрежет лишнее, поэтому берём с запасом.
+        """
+        for _ in range(3):
+            self.look(0, -self.PITCH_CHUNK)
+            time.sleep(0.15)
 
     def pitch_down(self, strength: float = 0.5) -> None:
         """Совместимость со старым кодом: наклон вниз долей от полного хода."""
