@@ -221,6 +221,52 @@ def recent_joins(limit: int = 6) -> list[tuple[float, str, int, Path]]:
     return out
 
 
+В_ИГРЕ = re.compile(r"setStage:\s*\(stage:UGCGame\)", re.I)
+
+
+def log_snapshot() -> set[str]:
+    """Какие логи клиента лежали ДО запуска. Снимать обязательно до launch().
+
+    Без этого списка ждать «в игре» нельзя: предыдущий клиент только что вышел,
+    его лог свежий по времени файла и маркер в нём уже стоит — мы поймали бы
+    чужой заход и поехали читать экран, которого ещё нет.
+    """
+    каталог = log_dir()
+    return {ф.name for ф in каталог.glob("*_Player_*.log")} if каталог.exists() else set()
+
+
+def wait_in_game(было: set[str], timeout: float = 25.0, poll: float = 0.5) -> float | None:
+    """Сколько секунд ждали, пока клиент встал на игровую поверхность. None — не дождались.
+
+    Раньше после появления окна просто спали фиксированные 25 секунд, потому что
+    клиент доедет «когда-нибудь». Замер 16.09 по логу: `setStage: (stage:UGCGame)`
+    приходит на 5.7 секунде, то есть три четверти сна тратились впустую. В приёмке
+    это видно снаружи — заказ живёт восемь минут от покупки, и один из них опоздал
+    на семь секунд.
+
+    Маркер взят именно этот, а не `Connection accepted` (3.6 с): соединение — ещё
+    не картинка, а нам нужна поверхность, с которой можно читать. Смотрим только
+    в логи, которых не было в `log_snapshot()` до запуска, — иначе поймаем маркер
+    предыдущего клиента. Не нашли за `timeout` — возвращаем None, и зовущий
+    досыпает по-старому: формат лога чужой и может смениться без нас.
+    """
+    крайний = time.time() + timeout
+    начало = time.time()
+    каталог = log_dir()
+    while time.time() < крайний:
+        свежие = sorted((ф for ф in каталог.glob("*_Player_*.log") if ф.name not in было),
+                        key=lambda ф: ф.stat().st_mtime, reverse=True)
+        for файл in свежие[:2]:
+            try:
+                текст = файл.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if В_ИГРЕ.search(текст):
+                return time.time() - начало
+        time.sleep(poll)
+    return None
+
+
 def newest_job_id(place_id: int | None = None, newer_than: float = 0.0) -> str | None:
     """jobId самого свежего захода. place_id — фильтр по нужной игре."""
     for mtime, job, place, _ in recent_joins():
