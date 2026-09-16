@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,15 +23,45 @@ from .log import get
 log = get("ocr")
 
 _reader = None
+_замок = threading.Lock()
 
 
 def _get_reader():
+    """Подъём движка стоит около полуминуты, и платится он один раз за процесс.
+
+    Замок нужен не ради скорости, а потому что греть движок стали заранее,
+    фоновой нитью, пока поднимается клиент: без него первый кадр успевает
+    позвать сюда же и построить второй Reader поверх строящегося первого.
+    """
     global _reader
-    if _reader is None:
+    if _reader is not None:
+        return _reader
+    with _замок:
+        if _reader is not None:
+            return _reader
+        # Мы всегда передаём Reader уже снятый WGC-кадр через read_image().
+        # screen_ocr всё равно при создании Reader пытается открыть второй
+        # desktop-duplicator через dxcam, хотя далее он не используется. После
+        # перезапуска Roblox это иногда падает в DXGI DuplicateOutput и ломает
+        # ферму ещё до первого кадра. Отключаем только лишний источник экрана;
+        # WinRT OCR остаётся тем же.
+        import screen_ocr._screen_ocr as screen_ocr_impl
+        screen_ocr_impl.dxcam = None
         from screen_ocr import Reader
         _reader = Reader.create_quality_reader()
         log.info("OCR-движок WinRT поднят")
     return _reader
+
+
+def прогреть() -> threading.Thread:
+    """Поднять движок фоном и отдать нить, чтобы её можно было дождаться.
+
+    Приёмка живёт в окне забора на восемь минут, и полминуты на движок в ней
+    заметны: раньше они шли ПОСЛЕ запуска клиента, теперь идут вместе с ним.
+    """
+    нить = threading.Thread(target=_get_reader, name="ocr-warm", daemon=True)
+    нить.start()
+    return нить
 
 
 @dataclass
