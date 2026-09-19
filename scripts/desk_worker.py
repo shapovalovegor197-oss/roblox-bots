@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, "src")
 
-from brainbot import config, launcher, log            # noqa: E402
+from brainbot import config, desktop, launcher, log   # noqa: E402
 from brainbot.mutex import SingletonMutex             # noqa: E402
 from brainbot.window import wait_for_window           # noqa: E402
 
@@ -33,6 +33,14 @@ log.setup(s.logs_dir)
 _mutex = SingletonMutex()
 _mutex.acquire()
 
+мой_стол = desktop.current()
+print("[%s] я на столе %r" % (acc, мой_стол), flush=True)
+if мой_стол.lower() == "default":
+    # Значит нас запустили мимо стола: работать можно, но это не флот, а
+    # второй бот на видимом столе — он будет драться с человеком за курсор.
+    print("[%s] ВНИМАНИЕ: воркер оказался на видимом столе, а не на своём"
+          % acc, flush=True)
+
 account = s.account(acc)
 if not account.cookie:
     sys.exit("[%s] пустая кука — вставь .ROBLOSECURITY в accounts.json" % acc)
@@ -44,7 +52,21 @@ print("[%s] клиент pid=%s, сервер=%s" % (acc, pid, job or "любо�
 
 win = wait_for_window(pid, timeout=150)
 if not win:
-    sys.exit("[%s] окно не появилось за 150 с" % acc)
+    # `wait_for_window` зовёт EnumWindows, а тот показывает только СВОЙ стол.
+    # Поэтому «окно не появилось» здесь значит «его нет на моём столе» — и
+    # раньше на этом всё обрывалось. Спросим про остальные столы и скажем
+    # прямо, куда уехал клиент: чаще всего его перехватывает уже запущенный
+    # экземпляр Roblox на видимом столе.
+    чужие = desktop.where(pid)
+    if чужие:
+        sys.exit("[%s] клиент pid=%s поднялся НЕ на моём столе %r, а на %s — "
+                 "флот так не работает" % (acc, pid, мой_стол, ", ".join(чужие)))
+    роблоксы = [(d, окна) for d, окна in desktop.layout(match="roblox") if окна]
+    if роблоксы:
+        куда = "; ".join("%s: %d окон" % (d, len(о)) for d, о in роблоксы)
+        sys.exit("[%s] моего окна нет, но клиенты Roblox есть тут: %s. Похоже, "
+                 "запуск перехватил уже работающий клиент" % (acc, куда))
+    sys.exit("[%s] окно не появилось за 150 с ни на одном столе" % acc)
 print("[%s] окно hwnd=%s — отдаю ферме" % (acc, win.hwnd), flush=True)
 time.sleep(3)
 

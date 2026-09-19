@@ -832,6 +832,24 @@ def cmd_desk(args) -> None:
         desktop.spawn(args.cmd)
         print(f"Запущено на столе {desktop.NAME}: {args.cmd}")
 
+    elif args.action == "where":
+        # Единственный честный ответ на «а где оказался клиент». EnumWindows
+        # показывает только СВОЙ стол, поэтому с видимого стола окно на столе
+        # бота невидимо, и наоборот — отсюда и брались «окно не появилось» при
+        # живом клиенте, и «все аккаунты запустились на первом столе».
+        фильтр = "" if args.all else "roblox"
+        печатали = False
+        for стол, окна in desktop.layout(match=фильтр):
+            if not окна and not args.all:
+                continue
+            печатали = True
+            print(f"{стол}: {len(окна)} окон")
+            for hwnd, pid, что in окна:
+                print(f"   hwnd={hwnd} pid={pid} {что}")
+        if not печатали:
+            print("клиентов Roblox нет ни на одном столе "
+                  "(--all покажет все окна и все столы)")
+
     elif args.action == "status":
         try:
             desktop.ensure()
@@ -1161,7 +1179,9 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("desk", help="отдельный рабочий стол: бот играет, "
                                      "машина остаётся твоей")
     sp.add_argument("action", choices=["hold", "browser", "game", "check", "show",
-                                       "bot", "spawn", "status"])
+                                       "bot", "spawn", "status", "where"])
+    sp.add_argument("--all", action="store_true",
+                    help="для where: все окна и все столы, а не только клиенты")
     sp.add_argument("--account", default="raven", help="для game: какой аккаунт поднять")
     sp.add_argument("--job-id", default=None, help="для game: зайти в конкретный сервер")
     sp.add_argument("--seconds", type=float, default=150.0,
