@@ -839,7 +839,9 @@ def cmd_desk(args) -> None:
         # живом клиенте, и «все аккаунты запустились на первом столе».
         фильтр = "" if args.all else "roblox"
         печатали = False
-        for стол, окна in desktop.layout(match=фильтр):
+        # С --all показываем только видимые окна: иначе в выводе две сотни
+        # служебных окон системы. Клиенты показываем все, даже грузящиеся.
+        for стол, окна in desktop.layout(match=фильтр, only_visible=args.all):
             if not окна and not args.all:
                 continue
             печатали = True

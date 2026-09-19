@@ -235,11 +235,17 @@ def where(pid: int) -> list[str]:
     return [d for d in desks() if any(p == pid for _hwnd, p, _t in windows(d))]
 
 
-def layout(match: str = "roblox") -> list[tuple[str, list[tuple[int, int, str]]]]:
+def layout(match: str = "roblox",
+           only_visible: bool = False) -> list[tuple[str, list[tuple[int, int, str]]]]:
     """Раскладка «стол → его окна», для глаз и для протокола замера.
 
     `match` фильтрует по имени процесса окна, чтобы в выводе не тонуть: пустая
     строка — показать все окна.
+
+    `only_visible=False` по умолчанию намеренно: клиент Roblox, пока грузится,
+    держит окна без заголовка и без флага видимости. Отфильтровать их — значит
+    ответить «клиентов нет ни на одном столе» ровно в ту минуту, когда вопрос
+    «куда он поехал» и задают.
     """
     import subprocess as _sp
     names: dict[int, str] = {}
@@ -258,10 +264,10 @@ def layout(match: str = "roblox") -> list[tuple[str, list[tuple[int, int, str]]]
     out = []
     for desk in desks():
         rows = []
-        for hwnd, pid, title in windows(desk):
+        for hwnd, pid, title in windows(desk, only_visible=only_visible):
             proc = names.get(pid, "?")
             if match and match.lower() not in proc.lower():
                 continue
-            rows.append((hwnd, pid, f"{proc}: {title}"))
+            rows.append((hwnd, pid, f"{proc}: {title or '(без заголовка)'}"))
         out.append((desk, rows))
     return out
