@@ -12,11 +12,26 @@ import ctypes
 import sys
 from ctypes import wintypes
 sys.path.insert(0, "src")
-from brainbot import config
+from brainbot import clientsettings, config
 from brainbot.window import enum_roblox_windows
 
 s = config.load()
 want_w, want_h = int(s.window["width"]), int(s.window["height"])
+
+# Сперва причина, потом следствие. Размер окна клиент хранит У СЕБЯ и применяет,
+# когда игра догрузится: пока в его настройках лежит полный экран, любое наше
+# SetWindowPos — это разовая правка, которая не переживёт следующего запуска.
+запомнено = clientsettings.прочитать()
+if запомнено:
+    print("клиент помнит: fullscreen=%s, maximized=%s, размер=%s" % (
+        запомнено["fullscreen"], запомнено["maximized"],
+        "x".join(запомнено["size"]) if запомнено["size"] else "?"))
+    поправлено = clientsettings.оконный_режим(want_w, want_h)
+    for поле, что in поправлено.items():
+        print("  поправил %s: %s" % (поле, что))
+    if поправлено:
+        print("  живой клиент перепишет это при выходе — рабочим оно станет на "
+              "следующем запуске через лаунчер")
 wins = enum_roblox_windows()
 if not wins:
     sys.exit("окон Roblox нет — клиент не запущен")

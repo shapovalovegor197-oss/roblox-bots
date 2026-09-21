@@ -171,6 +171,19 @@ def launch(account: Account, place_id: int, apply_fflags: bool = True,
             flags["DFIntTaskSchedulerTargetFps"] = target_fps
         write_fflags(flags)
 
+    # Оконный режим — отдельно от FFlags и перед КАЖДЫМ запуском. Отдельно,
+    # потому что MM2 приходит сюда с apply_fflags=False (у него свой профиль
+    # зрения), а в полный экран клиент уходит одинаково у всех. Перед каждым —
+    # потому что файл настроек общий и клиент переписывает его при выходе.
+    try:
+        from . import clientsettings
+        from .config import load as load_settings
+        w = load_settings().window
+        clientsettings.оконный_режим(int(w["width"]), int(w["height"]))
+    except Exception as беда:                                    # noqa: BLE001
+        log.warning("оконный режим клиента не выставлен: %s: %s",
+                    type(беда).__name__, беда)
+
     exe = find_player_exe()
     uri = build_launch_uri(auth_ticket(account), place_id, job_id=job_id,
                            link_code=link_code)
