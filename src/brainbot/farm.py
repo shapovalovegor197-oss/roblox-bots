@@ -3911,6 +3911,13 @@ class Farmer:
             if len(amounts) >= 2:
                 have = ocr.parse_amount(amounts[0])
                 need_cash = ocr.parse_amount(amounts[1])
+                # Суффикс теряется: 01.10 «$12.5» вместо «$12.5M/B» включило
+                # режим одной цели при кассе $1.3M — бот встал у ленты ждать
+                # цель вместо закупа. Сумма ребёрна меньше тысячи не бывает.
+                if have is not None and have < 1000:
+                    have = None
+                if need_cash is not None and need_cash < 1000:
+                    need_cash = None
                 break
         # Считаем ПО КОРОБКАМ, а не по прочитанным именам.
         #
