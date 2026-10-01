@@ -15,6 +15,9 @@ class Account:
     cookie: str
     role: str = "storage"
     enabled: bool = True
+    # Код приглашения в приватку (`privateServerLinkCode`) или ссылка
+    # `roblox.com/share?code=...`. Пусто — launcher ищет свою приватку сам.
+    private_link: str = ""
 
     def __repr__(self) -> str:  # чтобы кука не утекла в лог
         return f"Account({self.name!r}, role={self.role!r}, enabled={self.enabled})"
@@ -99,6 +102,7 @@ def load(settings_path: Path | None = None, accounts_path: Path | None = None) -
                 cookie=a.get("cookie", ""),
                 role=a.get("role", "storage"),
                 enabled=a.get("enabled", True),
+                private_link=a.get("private_link", ""),
             )
             for a in data.get("accounts", [])
         ]

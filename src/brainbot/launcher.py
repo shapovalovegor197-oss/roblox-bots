@@ -94,6 +94,49 @@ def auth_ticket(account: Account) -> str:
     return ticket
 
 
+def private_link_code(account: Account, place_id: int) -> str | None:
+    """Код захода в приватку аккаунта для `RequestPrivateGame`, либо None.
+
+    Решение 11.09: в приватке посторонних нет, значит лок не нужен — а лок самый
+    долгий и хрупкий шаг круга. Код берётся из `private_link` аккаунта; если там
+    пусто — ищем приватку, куда аккаунт может зайти (свою в первую очередь).
+
+    Ссылка, которую Roblox показывает сейчас в настройках сервера, — это
+    `share?code=...&type=Server`, а клиенту нужен `linkCode`. Перевод делает
+    `sharelinks/v1/resolve-link`.
+    """
+    link = (account.private_link or "").strip()
+    s = _session(account.cookie)
+    if not link:
+        r = s.get(f"https://games.roblox.com/v1/games/{place_id}/private-servers",
+                  params={"limit": 25}, timeout=15)
+        r.raise_for_status()
+        сервера = r.json().get("data", [])
+        if not сервера:
+            return None
+        me = s.get("https://users.roblox.com/v1/users/authenticated", timeout=15).json().get("id")
+        сервера.sort(key=lambda d: (d.get("owner") or {}).get("id") != me)
+        vip = сервера[0].get("vipServerId")
+        r = s.get(f"https://games.roblox.com/v1/vip-servers/{vip}", timeout=15)
+        r.raise_for_status()
+        link = r.json().get("link") or ""
+        if not link:
+            return None
+    m = re.search(r"privateServerLinkCode=([\w-]+)", link)
+    if m:
+        return m.group(1)
+    m = re.search(r"share\?code=([\w-]+)", link)
+    code = m.group(1) if m else link
+    if "share" not in link and not m and len(code) < 40:
+        return code                                   # уже linkCode
+    s.headers["x-csrf-token"] = csrf_token(s)
+    r = s.post("https://apis.roblox.com/sharelinks/v1/resolve-link",
+               json={"linkId": code, "linkType": "Server"}, timeout=15)
+    r.raise_for_status()
+    данные = (r.json().get("privateServerInviteData") or {})
+    return данные.get("linkCode")
+
+
 def build_launch_uri(ticket: str, place_id: int, browser_tracker_id: str = "0",
                      job_id: str | None = None, link_code: str | None = None,
                      access_code: str | None = None) -> str:

@@ -34,7 +34,8 @@ class Session:
     def alive(self) -> bool:
         return self.window is not None and self.window.alive()
 
-    def launch(self, job_id: str | None = None, тихий: bool = False) -> bool:
+    def launch(self, job_id: str | None = None, тихий: bool = False,
+               приватка: bool = False) -> bool:
         """Поднимает клиент и дожидается окна. False — не взлетело.
 
         `тихий=True` целится в малолюдный сервер. ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО — попытка
@@ -55,7 +56,19 @@ class Session:
         доступным вручную, для отдельного опыта с проверкой лока.
         """
         opt = self.settings.optimize
-        if job_id is None and тихий:
+        link_code = None
+        if job_id is None and приватка:
+            try:
+                link_code = launcher.private_link_code(self.account, self.settings.place_id)
+            except Exception as e:                              # noqa: BLE001
+                log.error("[%s] код приватки не получен: %s", self.account.name, e)
+                self.fails += 1
+                return False
+            if not link_code:
+                log.error("[%s] приватки нет — в публичный не иду", self.account.name)
+                self.fails += 1
+                return False
+        if job_id is None and тихий and not link_code:
             job_id = launcher.quietest_job_id(self.settings.place_id)
         try:
             self.pid = launcher.launch(
@@ -63,6 +76,7 @@ class Session:
                 apply_fflags=opt.get("apply_fflags", True),
                 target_fps=opt.get("target_fps"),
                 job_id=job_id,
+                link_code=link_code,
             )
         except launcher.LaunchError as e:
             log.error("[%s] %s", self.account.name, e)

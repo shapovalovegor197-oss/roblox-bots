@@ -26,6 +26,8 @@ from brainbot.inputs import Hand                           # noqa: E402
 from brainbot.farm import Farmer, FarmTuning               # noqa: E402
 from brainbot.brainrots import normalize                   # noqa: E402
 
+_ЧИСЛА = [a for a in sys.argv[1:] if not a.startswith("--")]
+sys.argv = [sys.argv[0]] + _ЧИСЛА + [a for a in sys.argv[1:] if a.startswith("--")]
 MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
 MIN_INCOME = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
 # Сколько перерождений сделать за прогон. Ребёрн СТИРАЕТ деньги и брейнротов —
@@ -37,7 +39,11 @@ REBIRTHS_GOAL = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 REBIRTHS_START = (int(sys.argv[4]) if len(sys.argv) > 4
                   and str(sys.argv[4]).isdigit() else 0)
 DRY_RUN = "--dry-run" in sys.argv
-ACCOUNT = "raven"
+ACCOUNT = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--account=")),
+               "raven")
+# Приватка: посторонних нет — значит лок не нужен (решение 11.09). Круг идёт
+# без плиты и подтверждения двери, а время у ленты не режется таймером лока.
+PRIVATE = "--private" in sys.argv
 
 # Секунд до конца лока, когда пора домой. Не константа: дорога домой плюс сам
 # лок занимают около сорока секунд, и если уходить с ленты за восемь, база
@@ -111,7 +117,7 @@ if not wins:
     _client_mutex.acquire()
     for _launch_try in range(3):
         _client_session = Session(account=s.account(ACCOUNT), settings=s)
-        if _client_session.launch():
+        if _client_session.launch(приватка=PRIVATE):
             break
         time.sleep(3.0)
     else:
@@ -139,6 +145,9 @@ f = Farmer(window=wins[0], hand=Hand(wins[0], s.input),
            tuning=FarmTuning(blind_lock=False),
            screens_dir=s.screenshots_dir)
 f.allow_wipe = not DRY_RUN
+if PRIVATE:
+    # Таймер лока для приватки бесконечен: лента и действия не ждут плиту.
+    f.lock_left_now = lambda: 999.0
 
 STATUS = "var/farm_status.json"
 state = {
@@ -1079,7 +1088,7 @@ def revive_client() -> bool:
             _client_mutex.acquire()
         for _ in range(3):
             _client_session = Session(account=s.account(ACCOUNT), settings=s)
-            if _client_session.launch():
+            if _client_session.launch(приватка=PRIVATE):
                 break
             time.sleep(3.0)
         else:
@@ -1177,6 +1186,8 @@ def учесть_дверь(opened_at: float) -> None:
 
 
 def ensure_locked() -> bool:
+    if PRIVATE:
+        return True
     """Дверь закрыта? Если нет — закрыть, и только потом что-то делать.
 
     ПРАВИЛО ПРОВЕРКИ (02.09, прямое требование пользователя: «ты не закрываешь

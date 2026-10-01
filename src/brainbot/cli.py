@@ -255,7 +255,7 @@ def cmd_launch(args) -> None:
     # потолок фермы (за ночь 06.09 дверь была открыта 5169 с, а сервер был на
     # 27 человек). В сервере на ≤3 игрока красть почти некому. `--busy`
     # выключает это, если нужен конкретный людный сервер.
-    if session.launch(тихий=not args.busy):
+    if session.launch(тихий=not args.busy, приватка=args.private):
         print(f"{account.name}: в игре, hwnd={session.window.hwnd}")
         print("Мьютекс отпускается вместе с процессом — для постоянной работы гоняй `up`.")
     else:
@@ -1254,6 +1254,9 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--busy", action="store_true",
                     help="не искать пустой сервер (по умолчанию склад идёт в "
                          "самый малолюдный: воровать некому)")
+    sp.add_argument("--private", action="store_true",
+                    help="в приватку аккаунта (private_link в accounts.json "
+                         "или своя приватка, найденная через API)")
     sp.set_defaults(fn=cmd_launch)
 
     sp = sub.add_parser("desk", help="отдельный рабочий стол: бот играет, "
