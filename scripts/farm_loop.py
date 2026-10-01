@@ -501,6 +501,25 @@ def подрулить_на_ленту(tol: float = 0.06, tries: int = 4) -> Non
         time.sleep(0.45)
 
 
+ПОЛУШАГИ_ПО_УМОЛЧАНИЮ = 3      # проба 01.10: лента в 1-1.5 шагах от спавна
+
+
+def _полушаги_до_ленты() -> int:
+    try:
+        with open(KNOW, encoding="utf-8") as fh:
+            return int(json.load(fh).get("полушаги_до_ленты") or ПОЛУШАГИ_ПО_УМОЛЧАНИЮ)
+    except Exception:                                       # noqa: BLE001
+        return ПОЛУШАГИ_ПО_УМОЛЧАНИЮ
+
+
+def _запомнить_полушаги(n: int) -> None:
+    try:
+        from brainbot.storage import update_json
+        update_json(KNOW, {"полушаги_до_ленты": n})
+    except Exception as exc:                                # noqa: BLE001
+        say("полушаги не записаны: %s" % exc)
+
+
 def _пришли_сверху(t0: float, шаг: int, как: str) -> float:
     say("на ленте на %d-м шаге (%s, по виду сверху), дорога %.1f с"
         % (шаг, как, time.time() - t0))
@@ -548,20 +567,29 @@ def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
     сверху = f.face_belt_from_top()
     if сверху is not None:
         say("к ленте по виду сверху: %+.1f град" % сверху)
-        t_пеленг, t_разворот = time.time() - t - t_респавн, 0.0
-        for i in range(max_steps):
-            f.hand.hold("w", 0.6)
+        # Полушаги, а не шаги: лента от спавна в полутора шагах, и целый шаг
+        # проскакивал полотно. Цвет ленты НЕ обязателен: в ивентах карта
+        # перекрашена (01.10 — вся земля розовая, синевы нет), поэтому число
+        # полушагов, замеренное на обычной карте, запоминается для базы
+        # аккаунта, и в ивенте бот встаёт по расстоянию и ждёт Purchase.
+        запомнено = _полушаги_до_ленты()
+        for i in range(max_steps * 2):
+            f.hand.hold("w", 0.3)
             time.sleep(0.3)
             prompt, inside = belt_signals()
             if prompt:
                 return _пришли_сверху(t, i + 1, "промпт")
             if on_belt() and not inside:
+                _запомнить_полушаги(i + 1)
                 return _пришли_сверху(t, i + 1, "полотно под ногами")
             if inside:
-                say("ушёл внутрь базы на %d-м шаге — разворачиваюсь заново" % (i + 1))
+                say("ушёл внутрь базы на %d-м полушаге — разворачиваюсь заново" % (i + 1))
                 if f.face_belt_from_top() is None:
                     break
                 continue
+            if i + 1 >= запомнено and not nav.find_conveyor(f.frame()):
+                # Синевы в кадре нет вовсе — это ивент, а не промах.
+                return _пришли_сверху(t, i + 1, "по расстоянию, %d полушагов" % запомнено)
             подрулить_на_ленту()
         if step_onto_belt():
             prompt, inside = belt_signals()
