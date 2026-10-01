@@ -20,7 +20,7 @@ import time
 import traceback
 
 sys.path.insert(0, "src")
-from brainbot import config, log, ocr                      # noqa: E402
+from brainbot import config, log, nav, ocr                     # noqa: E402
 from brainbot.window import enum_roblox_windows            # noqa: E402
 from brainbot.inputs import Hand                           # noqa: E402
 from brainbot.farm import Farmer, FarmTuning               # noqa: E402
@@ -486,6 +486,28 @@ def at_belt() -> bool:
     return belt_signals()[0]
 
 
+def подрулить_на_ленту(tol: float = 0.06, tries: int = 4) -> None:
+    """Довернуть камеру на полотно, не двигаясь (как scripts/goto_belt.py)."""
+    for _ in range(tries):
+        fr = f.frame()
+        w = fr.shape[1]
+        c = nav.find_conveyor(fr)
+        if not c:
+            return
+        off = (c.x - w / 2.0) / w
+        if abs(off) <= tol:
+            return
+        f.hand.look(int(f.nav.units_for_pixels(off * w) * 0.8), 0)
+        time.sleep(0.45)
+
+
+def _пришли_сверху(t0: float, шаг: int, как: str) -> float:
+    say("на ленте на %d-м шаге (%s, по виду сверху), дорога %.1f с"
+        % (шаг, как, time.time() - t0))
+    f.shot("belt_stand")
+    return time.time() - t0
+
+
 def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
     """Выйти из базы к ленте и ВСТАТЬ. Возвращает секунды пути.
 
@@ -518,6 +540,39 @@ def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
     say("ПОСЛЕ РЕСПАВНА: сам респавн %.1f, камера %.1f, таблица %.1f"
         % (_t_r - t, _t_v - _t_r, time.time() - _t_v))
     t_респавн = time.time() - t
+    # 01.10, приватка: разворот по виду сверху «пеленг на пад + 180» выводит к
+    # ленте с любой базы — ручная проба на shapovaluv встала у ленты с ПЕРВОГО
+    # шага. Слепые семь оборотов ниже подобраны под одну базу raven и на другой
+    # уводят в стену (кадр stuck_respawn 16:47). Они остаются запасным путём,
+    # если пад сверху не опознан.
+    сверху = f.face_belt_from_top()
+    if сверху is not None:
+        say("к ленте по виду сверху: %+.1f град" % сверху)
+        t_пеленг, t_разворот = time.time() - t - t_респавн, 0.0
+        for i in range(max_steps):
+            f.hand.hold("w", 0.6)
+            time.sleep(0.3)
+            prompt, inside = belt_signals()
+            if prompt:
+                return _пришли_сверху(t, i + 1, "промпт")
+            if on_belt() and not inside:
+                return _пришли_сверху(t, i + 1, "полотно под ногами")
+            if inside:
+                say("ушёл внутрь базы на %d-м шаге — разворачиваюсь заново" % (i + 1))
+                if f.face_belt_from_top() is None:
+                    break
+                continue
+            подрулить_на_ленту()
+        if step_onto_belt():
+            prompt, inside = belt_signals()
+            if prompt or (on_belt() and not inside):
+                return _пришли_сверху(t, max_steps, "доступил стрейфом")
+        f.shot("belt_top_miss")
+        say("по виду сверху ленту не взял — пробую прежний путь")
+        f.reset_to_base()
+        time.sleep(1.2)
+        f.set_work_view()
+        t_респавн = time.time() - t
     if f.face_base_from_top() is None:
         say("пад сверху не опознан — известного нуля нет")
     t_пеленг = time.time() - t - t_респавн
