@@ -2,8 +2,10 @@
 requests>=2.32
 numpy>=1.26
 opencv-python>=4.10
+Pillow>=10.0
+screen-ocr[winrt]>=0.0.2
 mss>=9.0
-pydirectinput>=1.0.4
+pydirectinput-rgx>=2.0.4
 pywin32>=306
 
 # захват экрана быстрее mss (необязательно, но сильно быстрее)

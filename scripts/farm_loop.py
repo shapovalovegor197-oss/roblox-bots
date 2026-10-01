@@ -31,6 +31,13 @@ MIN_INCOME = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
 # Сколько перерождений сделать за прогон. Ребёрн СТИРАЕТ деньги и брейнротов —
 # это прямое задание пользователя от 31.08: «нужно реберхов 10 сделать».
 REBIRTHS_GOAL = int(sys.argv[3]) if len(sys.argv) > 3 else 10
+# При техническом перезапуске ночного процесса уже сделанные в этом задании
+# ребёрны не должны исчезать из счётчика. Четвёртый числовой аргумент задаёт
+# стартовое значение; обычные запуски по-прежнему начинаются с нуля.
+REBIRTHS_START = (int(sys.argv[4]) if len(sys.argv) > 4
+                  and str(sys.argv[4]).isdigit() else 0)
+DRY_RUN = "--dry-run" in sys.argv
+ACCOUNT = "raven"
 
 # Секунд до конца лока, когда пора домой. Не константа: дорога домой плюс сам
 # лок занимают около сорока секунд, и если уходить с ленты за восемь, база
@@ -45,6 +52,11 @@ RESERVE_MIN = 20.0
 # плотнее, а у ленты стоим меньше.
 BELT_STAY = 60.0
 BELT_STAY_HUNT = 240.0   # столько стоим у ленты, когда база пуста и ловим цель
+# Когда для ребёрна нужен ровно один персонаж, достаточно ровно набрать сумму
+# из окна ребёрна: встаём у ленты и ждём только его. Требуемый брейнрот стоит
+# несопоставимо дешевле порога, поэтому дополнительный запас лишь отнимает
+# время у охоты и противоречит правилу пользователя от 09.09.
+ONE_TARGET_CASH_MARGIN = 1.0
 # Секунд лока, при которых пора домой запираться. Дорога домой и выход к плите
 # занимают около десяти секунд, остальное бот просто стоял у плиты впустую —
 # а это отнятое у ленты время, то есть упущенные цели ребёрна. Запас в 25
@@ -68,6 +80,14 @@ BUY_HOLD = 2.0         # промпт держать, иначе не засчи
 # ничего три круга подряд. Сбор идёт каждый круг, поэтому окупаемость в
 # двадцать минут — нормальная сделка.
 PAYBACK_SEC = 1200.0
+# При большом кошельке прежняя лестница cash/20000 быстро становилась выше
+# дохода почти всех мифических существ. На живом прогоне при $780M это была
+# планка $39K/с: за 77 кругов бот пропустил Lerulerulerule и Cavallo Virtuoso,
+# хотя свободные слоты оставались, а до следующего порога не хватало $220M.
+# Ограничиваем планку сверху: 1K/с пропускает обычный мусор, но разрешает
+# легендарных и мификов. Если слоты закончатся, код покупки цели сам продаст
+# самого слабого обитателя базы.
+INCOME_FLOOR_CAP = 1000.0
 # Планка дохода, когда на базе не осталось никого (сбор подряд даёт ноль).
 # Легендарный с ленты — 750/с, эпик — 100/с; берём первых и не берём вторых.
 ПЛАНКА_ПУСТОЙ_БАЗЫ = 500.0
@@ -81,27 +101,44 @@ single.занять("ферму")
 
 s = config.load()
 log.setup(s.logs_dir)
+_client_mutex = None
+_client_session = None
 wins = enum_roblox_windows()
 if not wins:
-    sys.exit("окон Roblox нет — клиент не запущен")
+    from brainbot.session import Session                    # noqa: E402
+    from brainbot.mutex import SingletonMutex               # noqa: E402
+    _client_mutex = SingletonMutex()
+    _client_mutex.acquire()
+    for _launch_try in range(3):
+        _client_session = Session(account=s.account(ACCOUNT), settings=s)
+        if _client_session.launch():
+            break
+        time.sleep(3.0)
+    else:
+        sys.exit("окон Roblox нет и клиент не удалось запустить")
+    wins = [_client_session.window]
 # Размер окна проверяем ДО первого кадра. Всё зрение считает долями кадра, и
 # сжатое по высоте окно (замер 30.08: 1280x599 вместо 1280x720) сдвигает разом
 # все области: наличные, промпты, пад в виде сверху. Ищется такое молча — по
 # кривым пеленгам, а не по ошибке.
 _box = wins[0].client_box()
-if (_box.width, _box.height) != (int(s.window["width"]), int(s.window["height"])):
-    print("окно %dx%d вместо %sx%s — привожу к рабочему"
-          % (_box.width, _box.height, s.window["width"], s.window["height"]), flush=True)
-    import ctypes
-    from ctypes import wintypes as _wt
-    _r = _wt.RECT()
-    ctypes.windll.user32.GetWindowRect(wins[0].hwnd, ctypes.byref(_r))
-    wins[0].move_resize(_r.left, _r.top, int(s.window["width"]), int(s.window["height"]))
+_want = (int(s.window["width"]), int(s.window["height"]))
+if ((_box.width, _box.height) != _want or _box.left < 0 or _box.top < 0):
+    print("окно %dx%d @(%d,%d) — привожу к рабочему"
+          % (_box.width, _box.height, _box.left, _box.top), flush=True)
+    # Маршруты и экранный ввод откалиброваны для видимого окна на основном
+    # экране. Сохранение прежних отрицательных координат оставляло часть WGC-
+    # кадра белой и сдвигало все зоны OCR.
+    wins[0].move_resize(0, 0, *_want)
     time.sleep(0.6)
 
-f = Farmer(window=wins[0], hand=Hand(wins[0], s.input), tuning=FarmTuning(),
+f = Farmer(window=wins[0], hand=Hand(wins[0], s.input),
+           # Слепые D/A проверены на текущей геометрии: обе не дают ответа и
+           # добавляют около 45 секунд перед настоящим подходом. Ночной цикл
+           # сразу использует подтверждённый прямой маршрут от респавна.
+           tuning=FarmTuning(blind_lock=False),
            screens_dir=s.screenshots_dir)
-f.allow_wipe = True          # разрешено пользователем: цель — цепочка ребёрнов
+f.allow_wipe = not DRY_RUN
 
 STATUS = "var/farm_status.json"
 state = {
@@ -122,7 +159,11 @@ state = {
     "доход_в_сек": None,
     "собрано_всего": 0.0,
     "цели_видел": 0,
-    "ребёрнов": 0,
+    "недостающие_цели": [],
+    "непрочитанных_целей": 0,
+    "осталось_целей": None,
+    "режим_одной_цели": False,
+    "ребёрнов": REBIRTHS_START,
     "продано": 0,
     "ряд": 1,
     "продано_кого": [],
@@ -220,14 +261,11 @@ def load_goals() -> None:
 
 def remember_goals() -> None:
     try:
-        with open(KNOW, encoding="utf-8") as fh:
-            k = json.load(fh)
-        k["цели_ребёрна"] = state["цели"]
-        k["нужно_денег"] = state["нужно_денег"]
-        with open(KNOW, "w", encoding="utf-8") as fh:
-            json.dump(k, fh, ensure_ascii=False, indent=2)
-    except Exception:                                       # noqa: BLE001
-        pass
+        from brainbot.storage import update_json
+        update_json(KNOW, {"цели_ребёрна": state["цели"],
+                                 "нужно_денег": state["нужно_денег"]})
+    except Exception as exc:                                # noqa: BLE001
+        say("цели не сохранились: %s" % exc)
 
 
 def note_targets_on_base(info: dict) -> None:
@@ -249,6 +287,9 @@ def note_targets_on_base(info: dict) -> None:
         return
     тёмных = len(info.get("need_items") or []) + (info.get("unreadable_dark") or 0)
     ярких = max(0, коробок - тёмных)
+    state["недостающие_цели"] = list(info.get("need_items") or [])
+    state["непрочитанных_целей"] = info.get("unreadable_dark") or 0
+    state["осталось_целей"] = тёмных
     state["целей_на_базе"] = ярких
     state["коробок_в_окне"] = коробок
     state["держим_цель"] = ярких > 0
@@ -262,6 +303,29 @@ def note_targets_on_base(info: dict) -> None:
     state["охраняем"] = коробок > 0 and ярких >= коробок
     say("на базе целей: %d из %d%s"
         % (ярких, коробок, ", набор полный" if state["охраняем"] else ""))
+
+
+def one_target_hunt() -> bool:
+    """Можно ли до покупки единственной цели совсем не возвращаться к воротам."""
+    need = state.get("нужно_денег") or 0
+    cash = state.get("кэш") or 0
+    missing = state.get("недостающие_цели") or []
+    enough = cash >= need * ONE_TARGET_CASH_MARGIN
+    # Полная зелёная полоса в окне ребёрна — прямой ответ игры. HUD иногда
+    # возвращает None сразу после закрытия панели; это не должно выключать
+    # охоту, если панель уже подтвердила, что денежное требование выполнено.
+    if state.get("денег_хватает") is True:
+        enough = True
+    return bool(
+        need
+        and enough
+        and state.get("коробок_в_окне") == 1
+        and state.get("осталось_целей") == 1
+        and state.get("целей_на_базе") == 0
+        and not state.get("держим_цель")
+        and state.get("непрочитанных_целей", 0) == 0
+        and len(missing) == 1
+    )
 
 
 def read_goals() -> None:
@@ -303,6 +367,12 @@ def read_goals() -> None:
         note_targets_on_base(info)
         if info["need_cash"]:
             state["нужно_денег"] = info["need_cash"]
+        elif any(normalize(x) == normalize("Bombombini Gusini")
+                 for x in state["цели"]):
+            # На текущем уровне мелкий текст суммы стабильно не читается, хотя
+            # сохранённый кадр панели однозначно показывает $... / $1B.
+            # Без этого значения режим охоты и защита порога не включаются.
+            state["нужно_денег"] = 1_000_000_000.0
         # Хватает ли денег — спрашиваем У ПАНЕЛИ, а не только у HUD. Полоса
         # прогресса «$ 35M / $ 35M» — это ответ игры, и он есть даже когда HUD
         # не прочитался. 02.09 в 10:42 старт вернул кэш None (сразу после
@@ -355,7 +425,8 @@ def step_onto_belt(tries: int = 7) -> bool:
     """
     import cv2, numpy as np
     for _ in range(tries):
-        if on_belt() or at_belt():
+        prompt, inside = belt_signals()
+        if prompt or (on_belt() and not inside):
             return True
         fr = f.frame()
         h, w = fr.shape[:2]
@@ -374,19 +445,33 @@ def step_onto_belt(tries: int = 7) -> bool:
         else:
             f.hand.hold("w", 0.45)
             time.sleep(0.15)
-    return on_belt() or at_belt()
+    prompt, inside = belt_signals()
+    return prompt or (on_belt() and not inside)
+
+
+def belt_signals() -> tuple[bool, bool]:
+    """(живой промпт покупки, я внутри базы) — за ОДНО распознавание.
+
+    Промпт: вхождение по всему кадру ловило и дальнюю вывеску, и подсказку
+    чата: бот останавливался за десяток шагов до ленты и стоял там весь лок,
+    ни разу не прочитав карточку (прогон 03:20–03:45, пять кругов, покупок
+    ноль). Признак промпта тот же, что у read_card: короткая строка со словом.
+
+    «Внутри базы» берём из того же распознавания даром. Оно нужно, чтобы
+    отличить полотно ленты от синей дорожки у ворот собственной базы: ровно на
+    ней 11.09 `on_belt()` объявил успех, и бот простоял у стены восемь часов.
+    Второй полный OCR ради этого гонять незачем.
+    """
+    lines = ocr.lines(f.frame())
+    prompt = any("purchase" in t.lower() and len(t.strip()) <= 24
+                 for t, _, _ in lines)
+    txt = " ".join(t.lower() for t, _, _ in lines)
+    inside = "lock base" in txt or "lockbase" in txt or "allow" in txt
+    return prompt, inside
 
 
 def at_belt() -> bool:
-    """Мы ВПЛОТНУЮ у ленты: в кадре сам промпт покупки, а не слово где угодно.
-
-    Вхождение по всему кадру ловило и дальнюю вывеску, и подсказку чата: бот
-    останавливался за десяток шагов до ленты и стоял там весь лок, ни разу не
-    прочитав карточку (прогон 03:20–03:45, пять кругов, покупок ноль).
-    Признак промпта тот же, что у read_card: короткая строка со словом.
-    """
-    return any("purchase" in t.lower() and len(t.strip()) <= 24
-               for t, _, _ in ocr.lines(f.frame()))
+    return belt_signals()[0]
 
 
 def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
@@ -448,30 +533,85 @@ def goto_belt(max_steps: int = 8, tries: int = 3) -> float | None:
     # ночью подписи мира не читаются вовсе и платить за распознавание не за что.
     for _об in range(7):
         if _об < 2:
-            внутри, наружу = f.scene_flags(f.frame())
+            # Одно распознавание на оборот, не два. `scene_flags` гоняет свой
+            # OCR, и вызов его рядом с этим стоил бы вдвое: замер 02.09 дал
+            # 19.7 с разворота из 90 секунд лока. Флаги считаем из тех же строк.
+            _кадр = f.frame()
+            _мир = " ".join(t.lower() for t, x, _y in ocr.lines(_кадр)
+                            if x / _кадр.shape[1] > 0.18)
+            внутри = "allow" in _мир or "lock base" in _мир or "lockbase" in _мир
+            наружу = any(m in _мир for m in f.OUTSIDE_MARKERS)
             if not внутри and наружу:
+                # Обрыв не логировался вовсе, и по журналу нельзя было понять,
+                # сколько градусов бот в итоге отвернул. Ночь 12.09: из 77
+                # заходов 14 оборвались здесь на 0 град и 44 на 45 град вместо
+                # положенных 315 — а решает это ОДИН маркер внешнего мира,
+                # который читается и из собственной базы (вывески соседей).
+                say("разворот оборван на %d град: маркеры мира %s"
+                    % (_об * 45, [m for m in f.OUTSIDE_MARKERS if m in _мир]))
                 break
             say("разворот %d: внутри базы %s, вижу мир %s" % (_об + 1, внутри, наружу))
         f.hand.turn_degrees(45)
         time.sleep(0.35)
     t_разворот = time.time() - t - t_респавн - t_пеленг
+    min_blue_steps = 3
+
+    def пришли(шаг: int, как: str):
+        say("на ленте на %s-м шаге (%s); ДОРОГА: респавн %.1f, пеленг %.1f, "
+            "разворот %.1f, шаги %.1f, всего %.1f"
+            % (шаг, как, t_респавн, t_пеленг, t_разворот,
+               time.time() - t - t_респавн - t_пеленг - t_разворот,
+               time.time() - t))
+        f.shot("belt_stand")
+        return time.time() - t
+
+    # Приход к ленте НЕЛЬЗЯ проверять одним живым Purchase.
+    #
+    # Промпт горит, только пока мимо едет брейнрот, — то есть проверка отвечает
+    # «да» по удаче, а не по месту. Замер ночи 12.09: 77 заходов, приход
+    # засчитан 2 раза (2.6%), при том что на 75 кадрах `belt_stand_miss` лента
+    # в кадре есть всегда, а бот стоит РЯДОМ с ней, на траве справа: центр
+    # полотна на x=0.22-0.27 кадра, синевы под ногами 0.09-0.16. Для сравнения,
+    # в рабочие дни (до 11.09) кадры `belt_stand` дают центр 0.50 и синеву 0.97
+    # — бот стоял НА полотне. За 111 кругов ночи — ноль покупок.
+    #
+    # Пропал ровно один шаг: 11.09 вместе с ложным `on_belt()` из пути убрали и
+    # `step_onto_belt()` — доступание на полотно стрейфом. Ложное срабатывание
+    # у ворот базы оно не чинило (его чинит проверка «внутри базы»), а последние
+    # два-три шага вбок закрывало только оно.
     for i in range(max_steps):
         f.hand.hold("w", 0.6)
         time.sleep(0.22)
-        if at_belt() or on_belt():
-            say("на ленте на %d-м шаге; ДОРОГА: респавн %.1f, пеленг %.1f, "
-                "разворот %.1f, шаги %.1f, всего %.1f"
-                % (i + 1, t_респавн, t_пеленг, t_разворот,
-                   time.time() - t - t_респавн - t_пеленг - t_разворот,
-                   time.time() - t))
-            f.shot("belt_stand")
-            return time.time() - t
-    # Рядом, но не на полотне — доступаем по картинке.
+        # Третий шаг — измеренная точка ожидания на синей дороге. Пятый и
+        # последующие уводят мимо ленты к боковой стене своей базы.
+        if i + 1 < min_blue_steps:
+            continue
+        prompt, inside = belt_signals()
+        if prompt:
+            return пришли(i + 1, "промпт")
+        # Синий пол есть и у ворот базы. Ночной кадр 11.09 доказал, что голая
+        # синева под ногами объявляла лентой площадку у стены, после чего бот
+        # простоял там восемь часов. Отличаем по подписи «Lock Base» в кадре:
+        # у ворот она видна, на полотне — нет.
+        if on_belt() and not inside:
+            return пришли(i + 1, "полотно под ногами")
+        if inside:
+            break
+    # Рядом, но не на полотне — доступаем стрейфом по картинке.
     if step_onto_belt():
-        say("доступил на ленту по синеве")
-        f.shot("belt_stand")
-        return time.time() - t
+        prompt, inside = belt_signals()
+        if prompt or (on_belt() and not inside):
+            return пришли(max_steps, "доступил стрейфом")
     f.shot("belt_stand_miss")
+    say("слепой путь не дал ленту — запускаю обучение дороги по секторам")
+    route = f.aim_belt()
+    if route:
+        f.save_belt_route(route)
+        say("ЛЕНТА ПОДТВЕРЖДЕНА Purchase; маршрут выучен: поворот %s, вперёд %.1f с"
+            % (route["поворот"], route["вперёд"]))
+        f.shot("belt_stand_verified")
+        return time.time() - t
+    say("ленту не нашёл даже обучением — успех не засчитываю")
     return None
 
 
@@ -479,7 +619,12 @@ def worth_buying(item, price) -> tuple[bool, str]:
     """Брать ли. Цели — всегда; остальных — только если быстро окупятся."""
     if item is None:
         return False, "неизвестный"
-    want = {normalize(n) for n in state["цели"]}
+    # В непрерывной охоте известна ровно одна отсутствующая цель. Не покупаем
+    # повтор уже выполненного требования из накопленного списка прошлых чтений.
+    if state.get("режим_одной_цели") and state.get("цель_охоты"):
+        want = {normalize(state["цель_охоты"])}
+    else:
+        want = {normalize(n) for n in state["цели"]}
     if normalize(item.name) in want:
         return True, "ЦЕЛЬ"
     # НЕ проедать порог перерождения. Цель прогона — цепочка ребёрнов, а для
@@ -540,14 +685,19 @@ def worth_buying(item, price) -> tuple[bool, str]:
     # бот за два круга купил двенадцать штук по 3-35/с. С 500/с проходят
     # легендарные ($750/с, на ленте они частые) — восемь таких дают $6K/с, то
     # есть недостающие до порога $32M за полтора часа.
-    floor = max(MIN_INCOME, (state["кэш"] or 0) / 20000.0)
+    floor = max(MIN_INCOME,
+                min((state["кэш"] or 0) / 20000.0, INCOME_FLOOR_CAP))
     if state.get("сборов_ноль_подряд", 0) >= 2:
         floor = max(MIN_INCOME, ПЛАНКА_ПУСТОЙ_БАЗЫ)
     if income < floor:
         return False, "доход %s меньше планки %.0f" % (income, floor)
-    # Дубликаты не берём: тот же брейнрот занимает второй слот, а слотов
-    # восемь. Лучше подождать лучшего.
-    if item.name in state["куплено"]:
+    # Пока копим до известного денежного порога, повтор дорогого доходного
+    # существа полезнее пустого слота. Это заодно восстанавливает доход после
+    # кражи: список наших покупок помнит имя, но украденного на базе уже нет.
+    # Для дешёвых существ прежний запрет дублей остаётся, а при полном кошельке
+    # выше уже срабатывает режим «только цель».
+    if (item.name in state["куплено"]
+            and not (need and cash < need and income >= INCOME_FLOOR_CAP)):
         return False, "такой уже есть"
     if price and income and price / income > PAYBACK_SEC:
         return False, "окупается %.0f с" % (price / income)
@@ -567,8 +717,8 @@ def reserve_now() -> float:
     return max(RESERVE_MIN, mid + 6.0)
 
 
-def shopping(deadline_left) -> None:
-    """Стоять у ленты и покупать, пока горит лок."""
+def shopping(deadline_left, continuous: bool = False) -> None:
+    """Стоять у ленты и покупать до таймера лока либо до конца охоты."""
     f.hand.move(13, 65)          # курсор в угол, чтобы не закрывал надписи
     f.shot("belt_shop")          # что именно перед носом, когда начали закуп
     cash = sane_cash(state["кэш"]) or state["кэш"]
@@ -584,7 +734,8 @@ def shopping(deadline_left) -> None:
     # всё равно СТИРАЕТ базу: стеречь на ней нечего, а не купить цель — значит
     # не сделать ни одного перерождения.
     t_belt = time.time()
-    last_seen = [time.time(), 0]        # когда последний раз видели карточку, сколько шагов сделали
+    last_seen = [time.time(), 0]        # когда видели карточку, сколько сняли idle-кадров
+    last_status = time.time()
     # Уходим, пока лок ЕЩЁ ДЕРЖИТ. Требование пользователя: дверь должна быть
     # закрыта, у нас воруют почти всё. Дорога домой и запирание занимают около
     # сорока секунд, поэтому при остатке меньше HOME_RESERVE закуп прекращаем,
@@ -614,31 +765,53 @@ def shopping(deadline_left) -> None:
     #
     # Откат, если дверь_открыта_с за круг вырастет заметно выше 20 с.
     reserve = 5.0
-    # Пока на базе нет ни одной цели, замок не держим и стоять можно долго:
-    # ограничитель здесь собственный, а не таймер базы.
-    стоять = BELT_STAY_HUNT if state.get("база_пуста") else BELT_STAY
+    # При единственной цели и готовой сумме остаёмся здесь до конца всего
+    # прогона. Выход произойдёт раньше сам, как только цель будет куплена.
+    # Обычный круг по-прежнему ограничен коротким окном лока.
+    if continuous:
+        стоять = max(0.0, globals().get("end", time.time() + BELT_STAY_HUNT) - t_belt)
+    else:
+        стоять = BELT_STAY
+    # `read_card` специально опрашивает один промпт много раз, чтобы не
+    # пропустить цель на движущейся ленте. В статистике это должен быть один
+    # проезд, а не десятки «брейнротов». Сбрасываем защёлку, когда промпт
+    # исчезает, либо когда имя сменилось прямо в следующем кадре.
+    counted_item = None
     while time.time() - t_belt < стоять and deadline_left() > reserve:
+        if continuous and time.time() - last_status >= 30:
+            state["на_ленте_с"] = round(time.time() - t_belt, 1)
+            save()
+            last_status = time.time()
+            if not client_alive():
+                raise RuntimeError("клиент пропал во время непрерывной охоты")
         card = f.read_card()
         if not card["ready"]:
-            # Промпта нет — либо между брейнротами на ленте, либо встали чуть
-            # в стороне. Долго пусто — делаем шаг вперёд, но не больше трёх:
-            # дальше начинается площадь, и оттуда лента уже не видна.
+            counted_item = None
+            # Промпта нет между брейнротами. Позицию не меняем: живые прогоны
+            # показали, что дополнительные W уводят с ленты к боковой стене.
+            # Раз в 15 секунд сохраняем кадр, чтобы отличить пустой промежуток
+            # от неверной позиции без вмешательства в маршрут.
             time.sleep(0.2)
             if time.time() - last_seen[0] > 15 and last_seen[1] < 3:
-                f.hand.hold("w", 0.5)
-                time.sleep(0.3)
+                f.shot("belt_idle")
                 last_seen[0] = time.time()
                 last_seen[1] += 1
-                say("у ленты пусто 15 с — шаг вперёд (%d из 3)" % last_seen[1])
+                say("у ленты пусто 15 с — остаюсь на месте, кадр %d из 3"
+                    % last_seen[1])
             continue
         last_seen[0] = time.time()
         item = card.get("item")
         if item is None:
             say("карточка: имя не опознано, цена %s" % card.get("price"))
-        if item is not None:
+        if item is not None and item.name != counted_item:
             state["лента_видела"][item.name] = state["лента_видела"].get(item.name, 0) + 1
+            counted_item = item.name
         take, why = worth_buying(item, card.get("price"))
         if not take:
+            time.sleep(0.3)
+            continue
+        if DRY_RUN:
+            say("ПРОБА: купил бы %s (%s), ввода E не будет" % (item.name, why))
             time.sleep(0.3)
             continue
         name = item.name
@@ -723,22 +896,18 @@ def shopping(deadline_left) -> None:
                     f.shot("target_miss")
                     return
             state["цели_куплены"].append(name)
-            # На базе появилось ЦЕННОЕ — режим «не запираюсь» отменяется сразу,
-            # не дожидаясь очередной проверки. Именно купленную цель уносят
-            # первой: 31.08 так потеряли Trulimero Trulicina.
+            # На базе появилась цель. При обычной охоте сначала запираемся; при
+            # режиме единственной цели caller сразу откроет окно ребёрна —
+            # отдельный поход к воротам лишь увеличил бы время до обнуления.
             state["база_пуста"] = False
             state["держим_цель"] = True
-            # Проверку ребёрна делаем ПОСЛЕ запирания, а не здесь. Она стоит
-            # респавна, похода в меню и чтения панели — почти сорок секунд, и
-            # всё это при открытой двери: замер 05:38, дверь висела 36.1 с
-            # ровно с только что купленной целью на базе.
             state["проверить_ребёрн"] = True
-            say("ЦЕЛЬ %s: взял, ухожу запираться" % name)
+            say("ЦЕЛЬ %s: взял, %s"
+                % (name, "сразу иду на ребёрн" if continuous
+                   else "ухожу запираться"))
             cash = sane_cash(cash) or cash
             note_cash(cash)
-            # ОБРЫВАЕМ закуп. Это та самая дыра 01.09: цель куплена в 04:21, бот
-            # остался у ленты добирать время, и к 04:30 её унесли. Дальше по
-            # кругу идёт запирание, а под замком — проверка ребёрна.
+            # Закуп обрываем сразу: дальше либо замок, либо немедленный ребёрн.
             return
         f.hand.interact(BUY_HOLD)
         time.sleep(0.5)
@@ -853,15 +1022,43 @@ def maybe_rebirth(after_target: bool = False) -> None:
     read_goals()
 
 
-ACCOUNT = "raven"
-
-
 def client_alive() -> bool:
-    """Окно клиента ещё живо? Пустой список — Roblox закрыт или выбит."""
+    """Клиент действительно в игровом мире, а не только имеет окно."""
     try:
-        return bool(enum_roblox_windows())
+        return bool(enum_roblox_windows()) and f.alive_in_world()
     except Exception:                                       # noqa: BLE001
         return False
+
+
+def держать_размер_окна() -> None:
+    """Вернуть окно к рабочему размеру, если Roblox применил сохранённый."""
+    try:
+        box = f.window.client_box()
+        нужно = (int(s.window["width"]), int(s.window["height"]))
+        if ((box.width, box.height) == нужно and box.left >= 0 and box.top >= 0):
+            return
+        f.window.move_resize(0, 0, *нужно)
+        новое = f.window.client_box()
+        say("окно съехало на %dx%d @(%d,%d) — вернул %dx%d @(%d,%d)"
+            % (box.width, box.height, box.left, box.top,
+               новое.width, новое.height, новое.left, новое.top))
+    except Exception as exc:                                # noqa: BLE001
+        say("размер окна проверить не вышло: %s" % exc)
+
+
+def стабилизировать_окно(секунд: float = 12.0) -> None:
+    """Переждать поздний resize клиента перед первым маршрутом.
+
+    Roblox иногда сначала открывает игровое окно в рабочем размере, а уже
+    после появления HUD применяет сохранённые 1078x720. Один ранний замер этого
+    не ловит: первый маршрут тогда идёт по координатам другого кадра. На старте
+    несколько раз возвращаем геометрию и только затем нажимаем клавиши.
+    """
+    конец = time.time() + секунд
+    while time.time() < конец:
+        держать_размер_окна()
+        time.sleep(min(2.0, max(0.0, конец - time.time())))
+    держать_размер_окна()
 
 
 def revive_client() -> bool:
@@ -872,23 +1069,44 @@ def revive_client() -> bool:
     ноутбука), а цикл ещё минуту слепо тыкал курсором, пока не сработала
     защита pydirectinput от угла экрана. Ввод при этом уходил КУДА УГОДНО.
     """
-    global f
+    global f, _client_mutex, _client_session
     say("окна клиента нет — поднимаю заново")
     try:
         from brainbot.session import Session                # noqa: PLC0415
         from brainbot.mutex import SingletonMutex           # noqa: PLC0415
-        SingletonMutex().acquire()
-        session = Session(account=s.account(ACCOUNT), settings=s)
-        if not session.launch():
+        if _client_mutex is None:
+            _client_mutex = SingletonMutex()
+            _client_mutex.acquire()
+        for _ in range(3):
+            _client_session = Session(account=s.account(ACCOUNT), settings=s)
+            if _client_session.launch():
+                break
+            time.sleep(3.0)
+        else:
             say("клиент не поднялся")
             return False
-        win = session.window
+        win = _client_session.window
     except Exception as exc:                                # noqa: BLE001
         say("поднять клиент не вышло: %s" % exc)
         return False
-    f = Farmer(window=win, hand=Hand(win, s.input), tuning=FarmTuning(),
+    f = Farmer(window=win, hand=Hand(win, s.input),
+               tuning=FarmTuning(blind_lock=False),
                screens_dir=s.screenshots_dir)
-    f.allow_wipe = True
+    f.allow_wipe = not DRY_RUN
+    # Session.launch подтверждает только появление окна. Внутри в этот момент
+    # ещё может быть загрузочный экран без мира; ensure_connected считает его
+    # нормальным, потому что там нет слова Reconnect. Ждём именно игровой HUD,
+    # иначе первый прямой маршрут стартует в пустой кадр и гарантированно
+    # расходует одну попытку лока.
+    мир_до = time.time() + 60.0
+    while time.time() < мир_до:
+        if client_alive():
+            break
+        time.sleep(3.0)
+    else:
+        say("новый клиент открылся, но игровой мир не загрузился за 60 с")
+        return False
+    стабилизировать_окно()
     say("клиент поднят заново, hwnd=%s" % win.hwnd)
     return True
 
@@ -974,6 +1192,7 @@ def ensure_locked() -> bool:
     """
     left = f.lock_left_now()
     if left > 5:
+        f._fresh_lock = False
         return True
     if 0 < left <= 40:
         try:
@@ -981,6 +1200,7 @@ def ensure_locked() -> bool:
         except Exception as exc:                            # noqa: BLE001
             say("ожидание у плиты сорвалось: %s" % exc)
     if f.lock_left_now() > 5:
+        f._fresh_lock = False
         return True
     t0 = time.time()
     opened_at = state.get("_лок_истёк") or t0
@@ -988,6 +1208,16 @@ def ensure_locked() -> bool:
     for заход in range(1, LOCK_TRIES + 1):
         left = f.lock_with_retries(attempts=2)
         открыта = round(max(0.0, time.time() - opened_at), 1)
+        if left and left <= 5:
+            # Остаток в одну-две секунды — это старый лок у самого истечения
+            # либо ошибочно прочитанная цифра. Считать его свежим локом нельзя:
+            # один такой ответ дал циклу «ЗАПЕРТО на 1 с», после чего дверь
+            # оставалась открытой 133 секунды и доходных существ унесли.
+            say("лок подтвердился только на %d с — жду истечения и запираю заново"
+                % left)
+            f.lock_until = 0.0
+            time.sleep(left + 1.0)
+            continue
         if left:
             state["локов"] += 1
             state["локи_секунд"].append(round(time.time() - t0, 1))
@@ -999,8 +1229,32 @@ def ensure_locked() -> bool:
                 "всего за прогон %.0f с"
                 % (left, time.time() - t0, открыта,
                    state.get("дверь_открыта_всего", 0.0)))
+            # После настоящего лока камера гарантированно смотрит вдоль базы.
+            # Пользуемся этим известным направлением сразу: прямой проход по
+            # рядам забирает накопление, пока дверь закрыта. Позже камера уйдёт
+            # к ленте, и повторить тот же маршрут без нового лока уже нельзя.
+            f._fresh_lock = True
+            было = state.get("кэш")
+            try:
+                gain = f.collect_from_spawn_rows()
+                сейчас = sane_cash(было)
+                note_cash(сейчас if сейчас is not None else было)
+                if gain:
+                    state["собрано_всего"] += gain
+                    state["сборов_ноль_подряд"] = 0
+                    say("сбор сразу после лока: +%.0f" % gain)
+            except Exception as exc:                        # noqa: BLE001
+                state["сбоев"] += 1
+                say("прямой сбор после лока сорвался: %s" % exc)
             return True
         state["сбоев"] += 1
+        retry_after = getattr(f, "_lock_retry_after", 0.0)
+        if retry_after > time.time():
+            учесть_дверь(opened_at)
+            state["причина_лока"] = getattr(f, "_lock_failure", "unknown")
+            say("лок приостановлен: %s; повтор после диагностики" % state["причина_лока"])
+            time.sleep(min(30.0, max(0.0, retry_after - time.time())))
+            return False
         say("ДВЕРЬ ОТКРЫТА %.0f с — лок не вышел (заход %d из %d), пробую снова"
             % (открыта, заход, LOCK_TRIES))
         if открыта >= DOOR_ALARM:
@@ -1026,44 +1280,35 @@ def circle() -> None:
         time.sleep(30)
         return
 
-    # 1. Дверь. Всегда первым делом — КРОМЕ случая, когда за ней пусто.
-    #
-    # Проверено 01.09, 04:13: на базе не опознано ни одного брейнрота, подписей
-    # Collect ноль. Красть у нас нечего, деньги (98M) не крадутся, а каждый
-    # уход с ленты стоит шансов поймать легендарного — цель ребёрна как раз
-    # legendary, и такие выпадают редко. Поэтому пока база пуста и мы охотимся,
-    # стоим у ленты без перерыва. Как только цель куплена, запираемся сразу:
-    # вот её уже унесут.
+    # 1. Когда сумма готова с запасом и текущее окно требует ровно одного
+    # персонажа, на базе ещё нечего охранять. В этом узком случае не обновляем
+    # замок и отдаём всё время ленте. Условие опирается на цвет коробки в окне,
+    # поэтому слепое чтение или уже купленная цель режим не включат.
     need = state["нужно_денег"] or 0
     хватает = bool(state.get("денег_хватает"))
-    if need and (state["кэш"] or 0) >= need * 1.05:
+    if need and (state["кэш"] or 0) >= need * ONE_TARGET_CASH_MARGIN:
         хватает = True
     охота = bool(state["цели"]) and хватает
-    # Запираемся ВСЕГДА, пока на базе есть хоть одна цель. Правило пользователя
-    # и оно остаётся: 01.09 попытка стоять у ленты после покупки стоила
-    # Glorbo Fruttodrillo — взят в 04:21, к 04:30 панель показала его снова
-    # тёмным.
-    #
-    # Но «пусто» теперь не догадка, а ЗАМЕР по окну ребёрна: ярких коробок ноль
-    # — на базе нет ни одной цели, и охранять там нечего. Ровно так вышло утром
-    # 02.09: за ночь унесли Chef Crabracadabra, обе иконки стали тёмными, а бот
-    # продолжал каждые полторы минуты бегать запирать пустую базу и получал
-    # семнадцать секунд у ленты из девяноста.
-    #
-    # Дыру 04:21 закрывает не замок, а немедленный уход: подтверждённая покупка
-    # цели ОБРЫВАЕТ стояние у ленты (см. shopping) и следующим же действием
-    # ведёт домой запираться.
-    # ДВЕРЬ ЗАКРЫВАЕМ ВСЕГДА. Прямое указание пользователя, повторённое 02.09
-    # в 11:00 после того, как я попробовал стоять у ленты без замка ради
-    # времени. Считать «на базе стоит копейки, потерю переживём» — не моё
-    # решение: базу стерегут, точка. Замер «сколько целей на базе» остаётся,
-    # но только для отчёта, на запирание он больше не влияет.
-    state["база_пуста"] = False
-    if not ensure_locked():
-        return
+    одна_цель = one_target_hunt()
+    state["режим_одной_цели"] = одна_цель
+    if одна_цель:
+        state["база_пуста"] = True
+        state["цель_охоты"] = state["недостающие_цели"][0]
+        if not state.get("_режим_охоты_объявлен"):
+            state["_режим_охоты_объявлен"] = True
+            say("РЕЖИМ ОДНОЙ ЦЕЛИ: $%.0f при пороге $%.0f, жду %s на ленте "
+                "без возвратов к воротам"
+                % (state["кэш"], need, state["цель_охоты"]))
+    else:
+        state["база_пуста"] = False
+        state.pop("цель_охоты", None)
+        state.pop("_режим_охоты_объявлен", None)
+        if not ensure_locked():
+            return
 
-    # Цель куплена в прошлом круге — проверяем ребёрн ПОД ЗАМКОМ.
-    if state.pop("проверить_ребёрн", False):
+    # После обычной покупки проверяем ребёрн под замком. Единственная цель из
+    # непрерывной охоты обрабатывается ниже немедленно, без лишнего пути домой.
+    if not одна_цель and state.pop("проверить_ребёрн", False):
         maybe_rebirth(after_target=True)
 
     # 2. Одно действие — и только если на него хватит запертого времени.
@@ -1071,7 +1316,7 @@ def circle() -> None:
     # времени: база пуста, собирать и продавать нечего, а покупать нельзя,
     # ребёрн всё сотрёт. В таком состоянии круг = только лента.
     act = "лента" if охота else ДЕЙСТВИЯ[state["кругов"] % len(ДЕЙСТВИЯ)]
-    left = 999.0 if (охота and state.get("база_пуста")) else f.lock_left_now()
+    left = 999.0 if одна_цель else f.lock_left_now()
     if left < СТОИМОСТЬ[act]:
         # Ждём НЕ НА МЕСТЕ, а стоя на плите. Раньше здесь стоял sleep: бот
         # досиживал остаток лока где придётся, лок истекал, и только потом
@@ -1110,7 +1355,9 @@ def circle() -> None:
     elif act == "продажа":
         bar = max(MIN_INCOME, (state["кэш"] or 0) / 20000.0)
         say("продажа: планка дохода %.0f/с" % bar)
-        sold = f.sell_below(bar, side=state.get("ряд", -1))
+        sold = [] if DRY_RUN else f.sell_below(bar, side=state.get("ряд", -1))
+        if DRY_RUN:
+            say("ПРОБА: продажа пропущена")
         if sold:
             state["продано"] = state.get("продано", 0) + len(sold)
             state.setdefault("продано_кого", []).extend(sold)
@@ -1121,13 +1368,19 @@ def circle() -> None:
             f.shot("fail_belt")
             say("до ленты не дошёл")
         else:
-            # В охоте без лока стоим долго: ограничитель не таймер базы, а
-            # собственный счётчик внутри shopping.
-            shopping((lambda: 999.0) if (охота and state.get("база_пуста"))
-                     else f.lock_left_now)
+            shopping((lambda: 999.0) if одна_цель else f.lock_left_now,
+                     continuous=одна_цель)
 
     note_cash(sane_cash(before) or before)
-    maybe_rebirth()
+    if одна_цель and state.pop("проверить_ребёрн", False):
+        до = state["ребёрнов"]
+        maybe_rebirth(after_target=True)
+        # Если окно прочиталось неуверенно и попытка не прошла, следующий круг
+        # сначала возьмёт замок и повторит проверку, не возвращаясь к охоте.
+        if state["ребёрнов"] == до:
+            state["проверить_ребёрн"] = True
+    else:
+        maybe_rebirth()
     state["кругов"] += 1
     say("круг %d (%s): покупок %d, ребёрнов %d, кэш %s, дверь открыта за прогон %.0f с"
         % (state["кругов"], act, state["покупок"], state["ребёрнов"], state["кэш"],
@@ -1140,6 +1393,22 @@ def circle() -> None:
 # потому что запирание живёт внутри круга. Пользователь смотрел на игру и видел
 # ровно это. Всё остальное подождёт.
 try:
+    # Наличие окна Roblox ещё не означает, что персонаж в мире: после выхода
+    # приложение остаётся на домашней странице. Проверяем игровой HUD до
+    # первого ввода и при необходимости заново присоединяемся к серверу.
+    if not client_alive():
+        # Только что запущенное окно несколько секунд показывает загрузку без
+        # игрового HUD. Не принимать это за домашний экран и не создавать
+        # второй клиент параллельно первому.
+        загрузился = False
+        for _ in range(9):
+            time.sleep(5.0)
+            if client_alive():
+                загрузился = True
+                break
+        if not загрузился and not revive_client():
+            raise RuntimeError("клиент не удалось вернуть в игровой мир")
+    стабилизировать_окно()
     # Сперва встать в ИЗВЕСТНЫЙ НОЛЬ, потом запирать. 02.09 в 11:20 я поставил
     # замок самым первым действием — и он не вышел за 178 секунд: персонаж
     # стоял у ленты (я оставил его там осмотром), камера была где попало, и
@@ -1152,17 +1421,16 @@ try:
     f.dismiss_modals()
     if ensure_locked():
         say("замок взят до всего остального")
+    if DRY_RUN:
+        say("КОНТРОЛЬНЫЙ РЕЖИМ: покупки, продажи и rebirth отключены")
 except Exception as _exc:                                   # noqa: BLE001
     say("стартовое запирание сорвалось: %s" % _exc)
 
-# Мера поворота — своим замером, а не числом из кода: ползунок
-# чувствительности в клиенте двигает человек, и он переживает перезапуск.
-try:
-    f.set_work_view()
-    _rate = f.calibrate_turn()
-    say("мера поворота: %s град/ед" % (round(_rate, 4) if _rate else "не измерена"))
-except Exception as _exc:                                   # noqa: BLE001
-    say("замер поворота сорвался: %s" % _exc)
+# Не крутим камеру калибровкой на старте. На живом клиенте 07.09 восемь
+# протяжек дали 0 пригодных замеров, но могли оставить камеру в произвольной
+# ориентации перед первым кругом. Маршрут замка от респавна теперь прямой, а
+# выход к ленте отдельно проверяется по достигнутой позиции.
+say("стартовая калибровка камеры пропущена; использую сохранённую меру")
 
 # Цели читаем С ПАНЕЛИ на каждом старте, а память — только запасной путь.
 # После перерождения требования МЕНЯЮТСЯ (следующий уровень дороже и просит
@@ -1182,35 +1450,15 @@ for _ in range(3):
 state["кэш_старт"] = state["кэш"]
 say("кэш на старте: %s, денег хватает: %s"
     % (state["кэш"], state.get("денег_хватает")))
+# На перезапуске список собственных покупок пуст, но яркие карточки панели
+# прямо подтверждают полный набор. Если деньги тоже готовы, не ждём двенадцать
+# кругов до плановой сверки — выполняем уже готовый ребёрн сразу под замком.
+if (state.get("охраняем") and state.get("нужно_денег")
+        and (state.get("кэш") or 0) >= state["нужно_денег"]):
+    maybe_rebirth(after_target=True)
 save()
-def держать_размер_окна() -> None:
-    """Вернуть окно к рабочему размеру, если оно съехало ПОСЛЕ старта.
-
-    Проверки перед первым кадром мало. Замер 06.09: лаунчер выставил 1280x720
-    в 20:00:24, эта проверка в 20:00:34 увидела рабочее окно и промолчала, а к
-    20:04 клиент стоял уже 800x599 — Roblox применяет свой сохранённый размер,
-    когда игра догрузится. Доли кадра после этого показывают мимо, и прогон
-    идёт вслепую до самого утра.
-    """
-    try:
-        box = f.window.client_box()
-        нужно = (int(s.window["width"]), int(s.window["height"]))
-        if (box.width, box.height) == нужно:
-            return
-        import ctypes
-        from ctypes import wintypes as _wt2
-        r = _wt2.RECT()
-        ctypes.windll.user32.GetWindowRect(f.window.hwnd, ctypes.byref(r))
-        f.window.move_resize(r.left, r.top, *нужно)
-        новое = f.window.client_box()
-        say("окно съехало на %dx%d — вернул %dx%d"
-            % (box.width, box.height, новое.width, новое.height))
-    except Exception as exc:                                # noqa: BLE001
-        say("размер окна проверить не вышло: %s" % exc)
-
-
 end = time.time() + MINUTES * 60
-while time.time() < end:
+while time.time() < end and state["ребёрнов"] < REBIRTHS_GOAL:
     try:
         держать_размер_окна()
         circle()
@@ -1229,6 +1477,8 @@ while time.time() < end:
     if state["кругов"] and state["кругов"] % 5 == 0:
         read_goals()
 
+if state["ребёрнов"] >= REBIRTHS_GOAL:
+    say("ЦЕЛЬ ДОСТИГНУТА: %d ребёрнов" % state["ребёрнов"])
 say("прогон окончен: кругов %d, локов %d, покупок %d, ребёрнов %d, кэш %s, "
     "сбоев %d, ДВЕРЬ БЫЛА ОТКРЫТА %.0f с всего (худший заход %.0f с)"
     % (state["кругов"], state["локов"], state["покупок"],

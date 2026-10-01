@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,6 +72,11 @@ class Session:
         timeout = self.settings.supervisor["launch_timeout_sec"]
         win = wait_for_window(self.pid, timeout=timeout)
         if win is None:
+            # Ошибка авторизации остаётся живым окном и мешает следующему
+            # запуску. Закрываем только процесс, который создали в этой попытке.
+            subprocess.run(["taskkill", "/F", "/PID", str(self.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           check=False)
             self.fails += 1
             return False
 

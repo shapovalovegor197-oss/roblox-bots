@@ -411,7 +411,7 @@ def _run_op(args, s, f, rec=None) -> None:
         print(f"собрано: {gain:.0f}")
 
     elif args.name == "lock":
-        sec = f.lock_base()
+        sec = f.lock_with_retries(attempts=2)
         print(f"база заперта на {sec} с" if sec else "подтверждения лока нет")
 
     elif args.name == "buy":
@@ -651,7 +651,7 @@ def cmd_teach(args) -> None:
     s = _settings()
     f = _farmer(args, s)
     lesson = lessons.teach(f, args.name, seconds=args.seconds,
-                           countdown=args.countdown, setup=args.setup)
+                           countdown=args.countdown, setup=args.setup, goal=args.goal)
     path = lessons.save(lesson, s.screenshots_dir.parent)
     print(f"урок сохранён: {path}")
     print("повторить: python run.py replay --name " + args.name)
@@ -666,8 +666,15 @@ def cmd_lessons(args) -> None:
         print("уроков пока нет. Запиши: python run.py teach --name к-ленте")
         return
     for lesson in all_lessons:
-        keys = " ".join(f"{'+'.join(st.keys)}{st.hold:.1f}" for st in lesson.steps[:12])
+        keys = " ".join(f"turn({st.dx},{st.dy})" if isinstance(st, lessons.Turn)
+                        else f"{'+'.join(st.keys)}{st.hold:.1f}" for st in lesson.steps[:12])
         mark = {True: "цель достигнута", False: "неудачный", None: "не подтверждён"}[lesson.ok]
+        if not lesson.capture_ok:
+            mark = "неполная запись"
+        elif lesson.goal is None:
+            mark = "цель не задана; нужна проверка"
+        elif lesson.replay_ok is not None:
+            mark = "повтор подтверждён" if lesson.replay_ok else "повтор не удался"
         print(f"  {lesson.name:16} {len(lesson.steps):3} шагов  {lesson.duration():5.1f}с  "
               f"{mark}")
         print(f"      {keys}{' ...' if len(lesson.steps) > 12 else ''}")
@@ -682,8 +689,19 @@ def cmd_replay(args) -> None:
     if not found:
         sys.exit(f"уроков с именем {args.name!r} нет — сначала teach")
     lesson = lessons.merge(found)
+    if lesson is None and args.unverified:
+        candidates = [l for l in found if l.steps and l.capture_ok]
+        lesson = candidates[-1] if candidates else None
     if lesson is None:
-        sys.exit("удачных уроков нет")
+        sys.exit("подтверждённых уроков нет; для проверки старой записи: --unverified --goal lock/prompt/purchase")
+    goal = args.goal or lesson.goal or lessons.infer_goal(args.name)
+    if goal is None:
+        sys.exit("укажи цель урока: --goal lock/prompt/purchase")
+    lesson.goal = goal
+    if args.buy and goal != "prompt":
+        sys.exit("--buy применяется только с --goal prompt")
+    if lesson.context.get("start") == "manual":
+        print("урок записан с ручного старта: персонаж и камера должны стоять как перед показом")
     print(f"повторяю {args.name}: {len(lesson.steps)} шагов, {lesson.duration():.1f} с")
 
     rec = None
@@ -697,14 +715,23 @@ def cmd_replay(args) -> None:
         # Признак цели зависит от того, чему учили. Раньше он был зашит на
         # промпт покупки, и урок про лок объявлялся неудачным всегда — что бы
         # бот ни сделал.
-        goals = {
-            "purchase": lambda: bool(f.sees("purchase")),
-            "lock": lambda: bool(f._read_lock_seconds() or f.read_lock_left()),
-        }
-        rep = lessons.replay(f, lesson, check=goals[args.goal])
+        check = lessons.GoalCheck(f, goal)
+        check.interacted = lambda: (any(tuple(e[1:4]) == ("key", "e", "вниз")
+                                        for e in lesson.events)
+                                   or any(isinstance(st, lessons.Step) and "e" in st.keys
+                                          for st in lesson.steps))
+        rep = lessons.replay(f, lesson, check=check)
+        if "ошибка" not in rep:
+            if rep.get("цель"):
+                lesson.ok = True
+            if lesson.source_path:
+                from .storage import update_json
+                update_json(lesson.source_path, lesson.as_dict())
+            else:
+                lessons.save(lesson, s.screenshots_dir.parent)
         for k, v in rep.items():
             print(f"  {k}: {v}")
-        if rep.get("цель") and args.buy:
+        if rep.get("цель") and args.buy and goal == "prompt":
             print("  промпт есть — покупаю")
             f.hand.interact(1.8)
             print("  на базе:", f.base_items())
@@ -1046,6 +1073,54 @@ def cmd_user(args) -> None:
     print(f"presence: {state}{here}  {pres.last_location}")
 
 
+def cmd_mm2(args) -> None:
+    """Обмен в Murder Mystery 2 на УЖЕ открытом окне. Бот — инициатор сделки.
+
+    Не заходит в сервер и не подводит к контрагенту: оба должны быть в одном
+    месте (удобнее в приватке). Только UI обмена — клики, без камеры.
+    """
+    from .scenarios import mm2_trade
+    from .config import Account
+
+    s = _settings()
+    win = _pick_window(args, s)
+    account = Account(name=args.account or "mm2", cookie="")
+    session = Session(account=account, settings=s)
+    session.adopt(win)
+    if args.fix_size:
+        session.apply_window_layout()
+
+    L = mm2_trade.load_layout()
+
+    if args.action == "survey":
+        for k, v in mm2_trade.survey(session, L).items():
+            print(f"  {k}: {v}")
+        return
+
+    if args.action == "survey-inv":
+        rep = mm2_trade.survey_inventory(session, item_name=args.item, L=L)
+        print(f"  shot: {rep['shot']}")
+        for c in rep["cells"]:
+            print(f"  {c['xy']}  {c['text']!r:22} RGB={c['rgb']}  редкость={c['rarity']}")
+        return
+
+    if not args.player:
+        sys.exit("нужен ник: run.py mm2 give <player> --item <name>")
+
+    if args.action == "give":
+        if not args.item:
+            sys.exit("для give нужен --item <что отдать>")
+        res = mm2_trade.give(session, args.player, args.item, L,
+                             rarity=args.rarity, qty=args.qty, wait_partner_sec=args.wait)
+    else:  # receive
+        res = mm2_trade.receive(session, args.player, expect_item=args.item,
+                                L=L, wait_partner_sec=args.wait)
+
+    print(("OK: " if res.ok else "НЕ ОК: ") + f"[{res.stage}] {res.message}")
+    if res.proof:
+        print(f"пруф: {res.proof}")
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="brainbot", description="Боты Steal a Brainrot")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1152,6 +1227,8 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--name", default="к-ленте", help="как назвать маршрут")
     sp.add_argument("--seconds", type=float, default=60.0)
     sp.add_argument("--countdown", type=int, default=3)
+    sp.add_argument("--goal", choices=["prompt", "purchase", "lock"],
+                    help="prompt: дошёл к товару; purchase: подтверждена покупка; lock: таймер базы")
     sp.add_argument("--setup", action="store_true",
                     help="дать боту выставить старт перед записью (по умолчанию нет)")
     sp.add_argument("--hwnd", type=int)
@@ -1167,7 +1244,8 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--nick", default=None)
     sp.add_argument("--record", action="store_true")
     sp.add_argument("--buy", action="store_true", help="в конце нажать покупку")
-    sp.add_argument("--goal", default="purchase", choices=["purchase", "lock"],
+    sp.add_argument("--unverified", action="store_true", help="явно проверить старый или неподтверждённый урок")
+    sp.add_argument("--goal", default=None, choices=["prompt", "purchase", "lock"],
                     help="по какому признаку считать урок удавшимся")
     sp.set_defaults(fn=cmd_replay)
 
@@ -1226,6 +1304,19 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("user", help="ник → id и presence")
     sp.add_argument("nickname")
     sp.set_defaults(fn=cmd_user)
+
+    sp = sub.add_parser("mm2", help="обмен в Murder Mystery 2 (окно уже открыто, бот — инициатор)")
+    sp.add_argument("action", choices=["give", "receive", "survey", "survey-inv"])
+    sp.add_argument("player", nargs="?", help="ник контрагента (не нужен для survey/survey-inv)")
+    sp.add_argument("--item", help="give: что отдать; receive: что ждём; survey-inv: фильтр поиска")
+    sp.add_argument("--rarity", help="give: редкость предмета (common/rare/legendary/godly) — "
+                                     "различает имена-двойники по цвету плашки")
+    sp.add_argument("--qty", type=int, default=1, help="give: сколько единиц выложить (стак), макс 4")
+    sp.add_argument("--account", help="имя для логов (по умолчанию mm2)")
+    sp.add_argument("--hwnd", type=int, help="окно, если их несколько")
+    sp.add_argument("--wait", type=float, default=180.0, help="сколько ждать контрагента, с")
+    sp.add_argument("--fix-size", action="store_true", help="сначала выставить окно 1280x720")
+    sp.set_defaults(fn=cmd_mm2)
 
     args = p.parse_args(argv)
     args.fn(args)

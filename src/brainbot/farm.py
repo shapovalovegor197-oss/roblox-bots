@@ -621,6 +621,9 @@ class Farmer:
                 # на 42 кадрах стенда, оба настоящих окна найдены. Заголовки же
                 # OCR корёжит («nebirth»), из-за них и городили поиск крестика.
                 if any(m in text for m in self.MODALS):
+                    if force:
+                        log.warning("меню не удалось исключить при восстановлении — движение отменено")
+                        return False
                     log.info("похоже на окно по тексту, но крестика нет — иду дальше")
                 return True
             log.info("закрываю окно игры (крестик @%s,%s)", spot.x, spot.y)
@@ -634,8 +637,8 @@ class Farmer:
         # десяток попыток подряд и вставал намертво (прогон 04:14). Настоящее
         # окно и так провалит наведение — там ничего не видно, — и попытка
         # честно закончится респавном. Ложное же больше не мешает.
-        log.info("крестик не исчез после кликов — считаю экран чистым и иду дальше")
-        return True
+        log.info("крестик не исчез после кликов")
+        return not force
 
     def calibrate_turn(self, step: int = 50, tries: int = 8) -> float | None:
         """Измерить градусы на единицу мыши. ВЕРТИКАЛЬ КАМЕРЫ НЕ ТРОГАЕТСЯ.
@@ -1482,7 +1485,7 @@ class Farmer:
         # похода база оставалась открытой, и запирали её тогда, когда красть уже
         # было поздно. Порядок правильный такой: запер, вышел, дошёл, купил,
         # вернулся.
-        report["заперта"] = self.lock_base()
+        report["заперта"] = self.lock_with_retries(attempts=2)
         log.info("база заперта на %s с" if report["заперта"] else
                  "запереть базу не вышло — иду всё равно", report["заперта"])
 
@@ -1912,6 +1915,42 @@ class Farmer:
         self.shot("collect_labels_zero")
         return 0.0
 
+    def collect_from_spawn_rows(self, rows: tuple[int, ...] = (-1, 1)) -> float:
+        """Собрать пады прямыми проходами от точки респавна.
+
+        Вызывать сразу после успешного лока: в этот момент камера уже наведена
+        на плиту в глубине базы, поэтому после респавна ``w`` ведёт ровно внутрь.
+        Живая калибровка 07.09: ``w 0.60 -> a 0.45 -> w`` по левому ряду
+        подняла кассу 318.57M -> 348.14M. Это устойчивее поиска мелких подписей
+        Collect и не требует лестницы: накопление лежит на первом этаже.
+        """
+        before = self.read_hud_cash()
+        latest = before
+        for side in rows:
+            self.reset_to_base()
+            time.sleep(0.8)
+            self.set_work_view()
+            self.close_players_table()
+            self.dismiss_modals()
+            self.hand.hold("w", 0.60)
+            self.hand.hold("a" if side < 0 else "d", 0.45)
+            for _ in range(5):
+                self.hand.hold("w", 0.35)
+                time.sleep(0.10)
+            now = self.read_hud_cash()
+            if now is not None:
+                latest = now
+                log.info("прямой сбор, %s ряд: кэш %s",
+                         "левый" if side < 0 else "правый", now)
+        if before is not None and latest is not None and latest > before:
+            gain = latest - before
+            log.info("прямой сбор от спавна: +%.0f (стало %.0f)", gain, latest)
+            return gain
+        log.info("прямой сбор от спавна: прирост не подтверждён (%s -> %s)",
+                 before, latest)
+        self.shot("collect_spawn_zero")
+        return 0.0
+
     def collect_back_from_plate(self, steps: int = 5) -> float:
         """Собрать деньги ПОСЛЕ запирания: пройти по каждому ряду ПРЯМО.
 
@@ -2120,6 +2159,8 @@ class Farmer:
         if "already" in text:
             точнее = self.read_lock_left()
             self._уже_заперта = True
+            log.info("подтверждение лока: игра ответила already locked, "
+                     "счётчик %s, использую %s с", точнее, точнее or 20)
             return точнее or 20
         return None
 
@@ -2127,6 +2168,9 @@ class Farmer:
         """Запомнить лок по своим часам. Возвращает те же секунды."""
         self.lock_seconds = seconds
         self.lock_until = time.time() + seconds
+        self._lock_failures = 0
+        self._lock_retry_after = 0.0
+        self._lock_failure = None
         return seconds
 
     def lock_left_now(self) -> int:
@@ -2141,9 +2185,13 @@ class Farmer:
         """
         got = self.read_lock_flash()
         if got:
+            source = "already locked" if getattr(self, "_уже_заперта", False) else "вспышка"
+            log.info("подтверждение лока: %s, %d с", source, got)
+            self._уже_заперта = False
             return self.note_locked(got)
         got = self.read_lock_left(quick=True)
         if got:
+            log.info("подтверждение лока: счётчик, %d с", got)
             return self.note_locked(got)
         return None
 
@@ -2394,6 +2442,7 @@ class Farmer:
         """
         last = None
         misses = 0
+        stagnant = 0
         # Масштаб доворота подстраивается ПО ХОДУ. Перевод «пиксели -> единицы
         # мыши» верен только для той дистанции, на которой его мерили: близкие
         # объекты при повороте смещаются сильнее далёких, замеры на одной базе
@@ -2403,7 +2452,7 @@ class Farmer:
         # Правило простое: промах сменил знак, а меньше не стал — шаг вдвое
         # короче. Не уменьшается вовсе — шаг в полтора раза длиннее.
         scale = 1.0
-        for _ in range(tries):
+        for attempt in range(tries):
             fr = self.frame()
             w = fr.shape[1]
             glow = self.plate_glow(fr)
@@ -2421,6 +2470,12 @@ class Farmer:
             misses = 0
             off = (glow[0] - w / 2.0) / w
             if last is not None:
+                stagnant = stagnant + 1 if abs(off - last) < 0.004 else 0
+                if stagnant >= 2 and abs(off) > tol:
+                    self._lock_failure = "aim_static"
+                    log.warning("наведение не реагирует: промах стоит на %.3f — "
+                                "проверю камеру перед следующей попыткой", off)
+                    return off
                 if off * last < 0 and abs(off) > abs(last) * 0.6:
                     scale = max(0.25, scale * 0.5)      # перелёт
                 elif off * last > 0 and abs(off) > abs(last) * 0.85:
@@ -2446,7 +2501,11 @@ class Farmer:
             # выше), поэтому там усиливаем.
             near = glow[2] > 8000
             gain = (1.8 if near else 1.0) * scale
-            self.hand.look(int(self.nav.units_for_pixels(off * w) * gain), 0)
+            units = int(self.nav.units_for_pixels(off * w) * gain)
+            log.info("наведение %d/%d: цель x=%.3f, промах %+.3f, площадь %d, "
+                     "масштаб %.2f, мышь %+d",
+                     attempt + 1, tries, glow[0] / w, off, glow[2], scale, units)
+            self.hand.look(units, 0)
             time.sleep(0.25)
         return last
 
@@ -2565,7 +2624,9 @@ class Farmer:
         перезаходе, и удачную запоминаем в памяти между запусками.
         """
         keys = keys or list(self.tuning.blind_lock_keys)
-        learned = getattr(self.nav.kb, "blind_lock_key", None)
+        # Plot geometry changes on every server join. A key learned in another
+        # process is evidence from another plot and must not steer this run.
+        learned = getattr(self, "_blind_lock_key", None)
         if learned in keys:
             keys = [learned] + [k for k in keys if k != learned]
         hold = self.tuning.to_lock_sec if hold is None else hold
@@ -2582,12 +2643,36 @@ class Farmer:
                 log.info("СЛЕПОЙ ЛОК: %s на %.1f с — дошёл за %.1f с "
                          "(оценка %.2f, %r)", key, hold, time.time() - t0,
                          score, text[:40])
-                self.nav.kb.blind_lock_key = key
-                self.nav.kb.save()
+                self._blind_lock_key = key
                 return self.note_locked(left)
             log.info("слепой лок %s на %.1f с — игра не ответила "
                      "(оценка %.2f, %r)", key, hold, score, text[:40])
         return None
+
+    def recover_lock(self) -> bool:
+        """After repeated failures, verify capture and camera before walking."""
+        self.hand.release_all()
+        self.shot("lock_recovery")
+        box = self.window.client_box()
+        frame = self.frame()
+        if frame.shape[:2] != (box.height, box.width):
+            self._lock_failure = "capture_size"
+            return False
+        if not self.dismiss_modals(force=True):
+            self._lock_failure = "modal"
+            return False
+        self.close_players_table()
+        self.set_work_view()
+        if self.calibrate_turn(tries=4) is None:
+            # Калибровка — диагностика, а не условие движения. На живом ночном
+            # прогоне 07.09 камера не прошла её десять раз подряд, хотя до этого
+            # тем же вводом шесть локов брались нормально. Блокировка здесь
+            # превращала один промах в вечную минутную паузу без новых попыток.
+            # Геометрия кадра и отсутствие модального окна уже проверены; для
+            # обзорного поворота остаётся сохранённый full_turn.
+            log.warning("камера не откалибровалась — продолжаю с сохранённым "
+                        "поворотом %.0f", self.nav.full_turn)
+        return True
 
     def lock_with_retries(self, attempts: int = 3) -> int | None:
         """Запереть базу, перерождаясь между попытками.
@@ -2613,6 +2698,23 @@ class Farmer:
             if уже:
                 log.info("база уже заперта (%d с) — заход не нужен", уже)
                 return уже
+            if time.time() < getattr(self, "_lock_retry_after", 0.0):
+                return None
+            strategy = "normal"
+            if getattr(self, "_lock_failures", 0) >= 2:
+                strategy = "recovery"
+                recovery_started = time.time()
+                log.warning("два провала лока — проверяю кадр, меню и поворот камеры")
+                if not self.recover_lock():
+                    box = self.window.client_box()
+                    self.nav.kb.note_lock_attempt(
+                        self._lock_failure, strategy, False,
+                        секунд=round(time.time() - recovery_started, 2),
+                        размер=[box.width, box.height],
+                        подряд=getattr(self, "_lock_failures", 0))
+                    self._lock_retry_after = time.time() + 60.0
+                    log.warning("восстановление лока не прошло: %s; пауза 60 с", self._lock_failure)
+                    return None
             # Слепой ход идёт первым и стоит 12 секунд. Не ответила игра —
             # ниже работает ровно прежний путь, ничего не потеряно.
             #
@@ -2626,7 +2728,12 @@ class Farmer:
             # другая база) начнёт с чистого счёта.
             слепых = getattr(self, "_слепых_подряд", 0)
             if i == 0 and getattr(self.tuning, "blind_lock", False) and слепых < 2:
+                blind_started = time.time()
                 left = self.lock_blind()
+                self.nav.kb.note_lock_attempt(
+                    "confirmed" if left else "blind_not_confirmed", "blind", bool(left),
+                    секунд=round(time.time() - blind_started, 2), попытка=i + 1,
+                    подряд=слепых)
                 if left:
                     self._слепых_подряд = 0
                     return left
@@ -2637,11 +2744,34 @@ class Farmer:
                     log.info("слепой лок отключён до конца прогона: на этой "
                              "базе он не отвечает ни разу")
             log.info("попытка лока %d из %d", i + 1, attempts)
+            attempt_started = time.time()
             self.reset_to_base()
             self.set_work_view()
-            left = self.lock_forward() if shift else self.lock_via_top()
+            self._lock_failure = "not_confirmed"
+            # Респавн фиксирует позицию, но не направление камеры: на другом
+            # сервере 07.09 тот же персонаж смотрел в центральный проход, и W
+            # увёл его наружу. lock_via_top сам оставит прямой маршрут, когда
+            # настоящая плита уже по центру; иначе один раз выставит направление
+            # по виду сверху, после чего подход всё равно идёт только на W.
+            # Прямой маршрут выбирается внутри lock_via_top, когда плита видна
+            # с респавна (включая умеренное боковое смещение). На другой
+            # геометрии сервера она может оказаться далеко сбоку; тогда сначала
+            # нужен одноразовый пеленг, иначе W уводит к чужой базе.
+            left = self.lock_forward() if shift else self.lock_via_top(straight=False)
+            self.nav.kb.note_lock_attempt("confirmed" if left else self._lock_failure,
+                                          strategy, bool(left),
+                                          секунд=round(time.time() - attempt_started, 2),
+                                          попытка=i + 1,
+                                          подряд=getattr(self, "_lock_failures", 0),
+                                          камера_двигается=getattr(self, "camera_turns", None))
             if left:
+                self._lock_failures = 0
+                self._lock_retry_after = 0.0
                 return left
+            self._lock_failures = getattr(self, "_lock_failures", 0) + 1
+            if strategy == "recovery":
+                self._lock_retry_after = time.time() + 60.0
+                return None
         return None
 
     def lock_forward(self, legs: int = 14, leg: float = 0.4) -> int | None:
@@ -2802,7 +2932,8 @@ class Farmer:
         time.sleep(0.3)
         return True
 
-    def lock_via_top(self, walk_legs: int = 8, leg: float = 0.6) -> int | None:
+    def lock_via_top(self, walk_legs: int = 8, leg: float = 0.6,
+                     straight: bool = False) -> int | None:
         """Запереть базу: определиться сверху, довернуться, дойти по свечению.
 
         Порядок ровно тот, что показал пользователь: сперва закрыть базу, потом
@@ -2847,10 +2978,38 @@ class Farmer:
         # это шесть с половиной секунд впустую из двадцати пяти на лок. А
         # каждая секунда лока это секунда, которую бот не стоит у ленты, и
         # заодно шире окно, в которое у нас воруют.
-        if self.plate_glow(self.frame()) is None:
+        первый_кадр = self.frame()
+        первое_свечение = self.plate_glow(первый_кадр)
+        # Снаружи вокруг полно голубых объектов. Сам факт свечения недостаточен:
+        # на неудачном сервере детектор видел чужого брейнрота у x=0.93 и принимал
+        # его за плиту. Но камера после респавна может быть слегка сбоку: живой
+        # замер x=0.658 всё ещё относится к нашей плите и прямому маршруту;
+        # попытка довернуть камеру оттуда растянула открытие двери до 99 секунд.
+        # Дальний чужой объект из прежнего сбоя был у x=0.93, поэтому допускаем
+        # боковое смещение до 0.18 и всё ещё отсекаем его с большим запасом.
+        по_центру = bool(
+            первое_свечение
+            and abs(первое_свечение[0] / первый_кадр.shape[1] - 0.5) <= 0.18
+        )
+        straight_from_spawn = straight or по_центру
+        if первое_свечение and not straight_from_spawn:
+            log.info("голубой кандидат сбоку x=%.3f — сначала выставляю направление",
+                     первое_свечение[0] / первый_кадр.shape[1])
+        if not straight_from_spawn:
+            # Самый прямой якорь — надпись самой кнопки Lock Base. На сервере,
+            # где респавн смотрел наружу, она уверенно читалась сбоку, тогда как
+            # голубым кандидатом был чужой брейнрот. Находим надпись обзором,
+            # один раз ставим её по центру и после этого камеру больше не трогаем.
+            try:
+                if self.nav.find("lock") and self.nav.face("lock", tol=90):
+                    straight_from_spawn = True
+                    log.info("направление выставлено по Lock Base — дальше только W")
+            except Exception as exc:                        # noqa: BLE001
+                log.warning("направление по Lock Base не выставилось: %s", exc)
+        if not straight_from_spawn:
             self.face_base_from_top()
         else:
-            log.info("плита видна сразу — вид сверху не нужен")
+            log.info("плита видна сразу — камера зафиксирована, иду прямо")
         _mark("разворот")
 
         # Пеленг сверху даёт грубое направление, дальше работает свечение.
@@ -2865,31 +3024,38 @@ class Farmer:
         #
         # Свечение плиты от оформления не зависит: это яркий голубой источник
         # (H≈90, V=255), ничего похожего вокруг нет.
-        if self.looking_outside(self.frame()):
-            # Смотрим наружу — сперва найти базу, потом наводиться.
-            if not self.sweep_for_glow():
-                log.warning("плиты не видно осмотром")
-                return None
-        off = self.aim_at_plate()
-        if off is None:
-            # Дешёвая попытка перед дорогим осмотром: шагнуть вперёд. Плита
-            # часто не видна с самого пада — её закрывает порог базы, — а с
-            # пары шагов внутрь появляется. Шаг стоит секунду, осмотр — пять.
-            self.hand.hold("w", 0.7)
-            time.sleep(0.35)
-            off = self.aim_at_plate()
-        if off is None:
-            # Пеленг на пад НЕОДНОЗНАЧЕН: он указывает на центр пада, а мы можем
-            # стоять на его дальнем краю — тогда «на базу» выходит ~180 градусов
-            # и разворот отворачивает от базы. Замерено: провалы шли ровно при
-            # паде под персонажем (y≈0.75, пеленг +153..+175), удача — когда пад
-            # сбоку (y≈0.46, пеленг +79).
-            if not self.sweep_for_glow():
-                log.warning("свечения плиты не видно даже осмотром")
-                return None
+        if straight_from_spawn:
+            # Положение камеры относительно персонажа создаёт перспективное
+            # смещение круга по экрану. Это не ошибка направления движения:
+            # живой прогон показал, что W от респавна уже ведёт по нужной прямой,
+            # а попытка центрировать круг уводит персонажа к боковой стене.
+            off = 0.0
+        else:
+            if self.looking_outside(self.frame()):
+                # Смотрим наружу — сперва найти базу, потом наводиться.
+                if not self.sweep_for_glow():
+                    log.warning("плиты не видно осмотром")
+                    self._lock_failure = "plate_not_found"
+                    return None
             off = self.aim_at_plate()
             if off is None:
-                return None
+                # Дешёвая попытка перед дорогим осмотром: шагнуть вперёд. Плита
+                # часто не видна с самого пада — её закрывает порог базы, — а с
+                # пары шагов внутрь появляется. Шаг стоит секунду, осмотр — пять.
+                self.hand.hold("w", 0.7)
+                time.sleep(0.35)
+                off = self.aim_at_plate()
+            if off is None:
+                # Пеленг на пад НЕОДНОЗНАЧЕН: он указывает на центр пада, а мы можем
+                # стоять на его дальнем краю — тогда «на базу» выходит ~180 градусов.
+                if not self.sweep_for_glow():
+                    log.warning("свечения плиты не видно даже осмотром")
+                    self._lock_failure = "plate_not_found"
+                    return None
+                off = self.aim_at_plate()
+                if off is None:
+                    self._lock_failure = "plate_not_found"
+                    return None
 
         # Идти можно ТОЛЬКО с сошедшимся наведением.
         #
@@ -2911,6 +3077,8 @@ class Farmer:
             off = again
         if abs(off) > 0.12:
             log.warning("наведение так и не сошлось (%.3f) — попытка отменена", off)
+            if getattr(self, "_lock_failure", None) != "aim_static":
+                self._lock_failure = "aim_stalled"
             return None
         _mark("наведение")
         log.info("навёлся на плиту, промах %.3f кадра", off)
@@ -2930,13 +3098,9 @@ class Farmer:
             if not glow:
                 lost += 1
                 log.info("шаг %d: свечения не видно (%d раз подряд)", i + 1, lost)
-                # Потеряли цель дважды — значит прошли мимо или упёрлись.
-                # Долбиться в одну точку нельзя, переопределяемся сверху.
-                if lost >= 2:
-                    if self.face_base_from_top() is None:
-                        return None
-                    self.aim_at_plate()
-                    lost = 0
+                # После начального наведения направление фиксировано. У самой
+                # плиты круг уходит под персонажа и закономерно исчезает; новый
+                # поворот камеры здесь только уводит с прямой траектории.
                 continue
             lost = 0
             gx, gy, area = glow
@@ -2954,15 +3118,6 @@ class Farmer:
                 _mark("дошаг")
                 log.info("ФАЗЫ: %s", ", ".join("%s %.1f" % kv for kv in _phase.items()))
                 return got
-            # Порог перенаведения тугой: 0.06 пропускал остаточные 0.043, и за
-            # один шаг они разрастались втрое — бот проходил мимо плиты.
-            # Правим вбок стрейфом, а не доворотом: доворот меняет всю картинку
-            # и сбивает уже набранное направление, а сместиться надо чуть-чуть.
-            off_now = gx / w - 0.5
-            if abs(off_now) > 0.06:
-                key = "d" if off_now > 0 else "a"
-                self.hand.hold(key, min(0.25, abs(off_now) / self.STRAFE_PER_SEC))
-                time.sleep(0.15)
         return self.confirm_lock()
 
     # Площадь свечения, при которой считаем, что стоим на плите.
@@ -2985,9 +3140,10 @@ class Farmer:
         экранный центр круга на полу не совпадает с точкой, где стоит персонаж;
         на это уходило до тридцати секунд, и всё равно срывалось.
 
-        Теперь: грубо довернуться вбок, если круг заметно в стороне, и идти
-        вперёд короткими шагами, проверяя лок после каждого. Проход через круг
-        гарантированно задевает его.
+        Теперь после единственного наведения идём только вперёд короткими
+        шагами, проверяя лок после каждого. Боковой стрейф у ближнего круга
+        вводил ошибку: перспективное экранное смещение не означает, что
+        персонаж физически стоит сбоку от прямой траектории.
         """
         прежняя, застрял = 0, 0
         for i in range(tries):
@@ -2995,13 +3151,6 @@ class Farmer:
             w = fr.shape[1]
             glow = self.plate_glow(fr)
             if glow:
-                off = (glow[0] - w / 2.0) / w
-                # Правим вбок, только если круг ЗАМЕТНО в стороне: точность не
-                # нужна, нужно лишь не пройти мимо.
-                if abs(off) > 0.09:
-                    key = "d" if off > 0 else "a"
-                    self.hand.hold(key, min(0.3, abs(off) / self.STRAFE_PER_SEC))
-                    time.sleep(0.2)
                 log.info("дошаг %d: круг x=%.3f площадь %d", i + 1, glow[0] / w, glow[2])
                 # УПЁРСЯ. Площадь свечения стоит на месте — значит персонаж не
                 # идёт, сколько ни держи «w», и замок не сработает никогда.
@@ -3027,9 +3176,25 @@ class Farmer:
                     застрял = 0
                 прежняя = glow[2]
             else:
-                log.info("дошаг %d: круг не виден — иду вперёд", i + 1)
+                left = self.lock_confirmed()
+                if left:
+                    return left
+                # Круг под ногами закрывает персонаж или он исчезает сразу
+                # после срабатывания. Продолжаем прямую лишь в пределах этого
+                # короткого, жёстко ограниченного цикла.
+                log.info("дошаг %d: круг не виден — продолжаю прямо", i + 1)
             self.hand.hold("w", 0.22)
             time.sleep(0.25)
+            # Первое пересечение круга выдаёт полную короткую вспышку с
+            # длительностью. Следующий контакт уже заменяет её сообщением
+            # `already locked`, из которого остаётся лишь осторожная оценка
+            # 20 секунд. Даём полному OCR несколько кадров ДО второго шага.
+            if i == 0:
+                seconds = self._read_lock_seconds(timeout=1.4)
+                if seconds:
+                    log.info("полная длительность поймана после первого шага: %d с",
+                             seconds)
+                    return self.note_locked(seconds)
             left = self.lock_confirmed()
             if left:
                 log.info("база заперта, осталось %d с", left)
@@ -3235,7 +3400,8 @@ class Farmer:
         "purchase", "index", "shop", "duel", "duels", "dues", "dueis", "trade",
         "codes", "rebirth", "nebirth", "empty", "base", "emptybase", "collect",
         "zone", "collectzone", "cashmulti", "friend", "boost", "livespawns",
-        "guaranteed", "legendary",
+        "guaranteed", "legendary", "brainrot", "luckyblock",
+        "brainrotgodluckyblock", "machine", "adminmachine", "rngmachine",
     )
 
     def _mask_left_hud(self, frame):
@@ -3389,7 +3555,18 @@ class Farmer:
         дальним товаром — нет. Редкость и доход из кадра НЕ вытягиваем: имя есть в
         справочнике, а там эти поля точные. OCR ошибается, справочник — нет.
         """
-        lines = ocr.lines(self._mask_left_hud(self.frame()))
+        # В охоте этот метод вызывается непрерывно. OCR всего 1280x720 кадра
+        # занимает около 0.41 с, тогда как промпт на живых кадрах Raven всегда
+        # был в полосе x=0.35..0.90, y=0.45..0.78 и её чтение занимает 0.03 с.
+        # Полный кадр оставляем редким fallback: он подхватит промпт, если
+        # персонаж или камера сместились, не превращая каждый опрос в паузу.
+        frame = self._mask_left_hud(self.frame())
+        h, w = frame.shape[:2]
+        x0, x1 = int(w * 0.32), int(w * 0.94)
+        y0, y1 = int(h * 0.42), int(h * 0.82)
+        crop = frame[y0:y1, x0:x1]
+        lines = [(t, x + x0, y + y0) for t, x, y in ocr.lines(crop)]
+        self._card_fast_reads = getattr(self, "_card_fast_reads", 0) + 1
         # Не точное равенство, а вхождение в КОРОТКОЙ строке. Точное равенство
         # ломается от любого мусора рядом («purchase.», «e purchase»), и в
         # прогоне 03:20–03:35 бот стоял у ленты пять кругов подряд, ни разу не
@@ -3398,6 +3575,11 @@ class Farmer:
         # это слово встречается в предложении.
         prompt = next(((t, x, y) for t, x, y in lines
                        if "purchase" in t.lower() and len(t.strip()) <= 24), None)
+        if not prompt and self._card_fast_reads % 25 == 0:
+            lines = ocr.lines(frame)
+            prompt = next(((t, x, y) for t, x, y in lines
+                           if "purchase" in t.lower()
+                           and len(t.strip()) <= 24), None)
         if not prompt:
             return {"item": None, "name": None, "price": None, "rarity": None,
                     "income": None, "ready": False}
@@ -3449,6 +3631,27 @@ class Farmer:
                                     break
             elif texts:
                 log.info("промпт есть, но имя не опознано: %s", " | ".join(texts[:4]))
+        if item is None:
+            # Последняя, более дорогая ступень — крупная вывеска НАД тем же
+            # товаром. Она читается заметно лучше серого текста промпта, но
+            # находится на сотни пикселей выше и не попадала в `above`.
+            # Сопоставляем по горизонтали и близости к промпту, чтобы имя
+            # соседнего товара на ленте не выдать за текущий.
+            full_lines = ocr.lines(frame)
+            nearby = []
+            for t, x, y in full_lines:
+                # Координаты WinRT OCR на вырезанном crop могут отличаться от
+                # полноэкранных примерно на 60 px, поэтому допускаем строку
+                # чуть ниже crop-координаты промпта.
+                if y >= py + 100 or abs(x - px) > 230 or self._is_ui_word(t):
+                    continue
+                hit = catalog().match(t, cutoff=0.68)
+                if hit is not None:
+                    nearby.append((abs(x - px) + 0.18 * (py - y), hit, t))
+            if nearby:
+                _, item, source = min(nearby, key=lambda row: row[0])
+                log.info("имя взято с крупной вывески: %s (OCR: %s)",
+                         item.name, source)
         return {"item": item, "name": item.name if item else None,
                 "rarity": item.rarity if item else None,
                 "income": item.base_income if item else None,

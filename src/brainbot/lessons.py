@@ -10,29 +10,25 @@
 
 Порядок работы:
 
-    python run.py teach --seconds 60      бот ставит старт, дальше идёшь ты
+    python run.py teach --seconds 60      пассивная запись прохода
     python run.py lessons                 что записано
     python run.py replay                  бот повторяет выученное
 
-Несколько уроков одного маршрута усредняются: берётся медиана длительностей по
-совпадающим шагам. Человек каждый раз жмёт чуть по-разному, и медиана убирает
-случайные отклонения, оставляя суть.
+Выбирается полный успешный показ; успешно проверенный повтор имеет приоритет.
+Новая запись хранит исходные события мыши и клавиш на общей временной шкале.
 """
 from __future__ import annotations
 
 import json
-import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .log import get
-from .recorder import InputLog, Recorder
 
 log = get("lessons")
 
-# Клавиши, которые имеет смысл повторять. Мышь не пишем: камеру бот ставит сам,
-# в известное положение, и повторять её движения не нужно и вредно.
+# Клавиши маршрута. Мышь нового урока хранится отдельно в потоке событий.
 REPLAY_KEYS = {"w", "a", "s", "d", "e", "space", "shift"}
 
 # Правая кнопка мыши в уроке НЕ повторяется как отдельный шаг, но записывается
@@ -100,20 +96,31 @@ class Step:
 @dataclass
 class Lesson:
     name: str
-    steps: list[Step] = field(default_factory=list)
+    steps: list[Step | Turn] = field(default_factory=list)
     note: str = ""
     ok: bool | None = None        # достиг ли урок цели по признакам
+    goal: str | None = None
+    replay_ok: bool | None = None
+    capture_ok: bool = True
+    events: list = field(default_factory=list)
+    context: dict = field(default_factory=dict)
+    source_path: Path | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict:
         return {"название": self.name, "заметка": self.note, "получилось": self.ok,
-                "шаги": [s.as_dict() for s in self.steps]}
+                "шаги": [s.as_dict() for s in self.steps], "цель": self.goal,
+                "повтор_получился": self.replay_ok, "запись_полная": self.capture_ok,
+                "события": self.events, "контекст": self.context}
 
     @staticmethod
     def from_dict(d: dict) -> "Lesson":
         steps = [Turn.from_dict(x) if "поворот" in x else Step.from_dict(x)
                  for x in d.get("шаги", [])]
         return Lesson(name=d.get("название", "?"), note=d.get("заметка", ""),
-                      ok=d.get("получилось"), steps=steps)
+                      ok=d.get("получилось"), steps=steps, goal=d.get("цель"),
+                      replay_ok=d.get("повтор_получился"),
+                      capture_ok=d.get("запись_полная", True),
+                      events=d.get("события", []), context=d.get("контекст", {}))
 
     def duration(self) -> float:
         return sum(getattr(s, "hold", 0.0) + s.pause for s in self.steps)
@@ -121,27 +128,20 @@ class Lesson:
 
 def holds_to_steps(holds: list[tuple[str, float, float]],
                    glue: float = 0.05) -> list[Step]:
-    """Поток удержаний -> шаги. Пересекающиеся во времени склеиваются в один шаг.
+    """Split at every key transition; partial overlaps retain their duration.
 
-    `glue` — насколько близкие по времени удержания считать одновременными:
-    человек не нажимает две клавиши в одну и ту же миллисекунду.
+    `glue` remains accepted for callers using the old API, but never changes
+    the timing of a recorded key press.
     """
     items = [(start, start + dur, key) for key, start, dur in holds
              if key in REPLAY_KEYS and dur >= MIN_HOLD]
-    items.sort()
-
-    groups: list[list] = []
-    for start, stop, key in items:
-        if groups and start <= groups[-1][1] + glue:
-            groups[-1][1] = max(groups[-1][1], stop)
-            if key not in groups[-1][2]:
-                groups[-1][2].append(key)
-        else:
-            groups.append([start, stop, [key]])
-
+    boundaries = sorted({t for start, stop, _ in items for t in (start, stop)})
     steps: list[Step] = []
     prev_end = 0.0
-    for start, stop, keys in groups:
+    for start, stop in zip(boundaries, boundaries[1:]):
+        keys = sorted({key for a, b, key in items if a <= start < b})
+        if not keys:
+            continue
         steps.append(Step(keys=keys, hold=stop - start,
                           pause=max(0.0, start - prev_end)))
         prev_end = stop
@@ -207,25 +207,30 @@ def turns_from_video(path, fps: int = 8, px_per_mouse: float = 0.39,
 
 
 def merge_turns(steps: list, turns: list, holds: list) -> list:
-    """Вставить повороты камеры между удержаниями, по времени.
-
-    Урок должен читаться как путь: повернулся -> прошёл -> повернулся -> прошёл.
-    Поэтому берём начала удержаний из исходного потока и раскладываем повороты
-    по промежуткам между ними.
-    """
+    """Split holds at turn timestamps, never moving the clock backwards."""
     if not turns:
         return steps
-    # Начала шагов восстанавливаем по паузам: они и так лежат в шагах.
-    out, clock, ti = [], 0.0, 0
+    turns = sorted(turns)
+    out, clock, source_clock, ti = [], 0.0, 0.0, 0
     for step in steps:
-        step_start = clock + step.pause
+        step_start = source_clock + step.pause
+        step_end = step_start + step.hold
         while ti < len(turns) and turns[ti][0] <= step_start:
             t, dx, dy = turns[ti]
             out.append(Turn(dx, dy, max(0.0, t - clock)))
             clock = t
             ti += 1
-        out.append(Step(step.keys, step.hold, max(0.0, step_start - clock)))
-        clock = step_start + step.hold
+        cursor = step_start
+        while ti < len(turns) and turns[ti][0] < step_end:
+            t, dx, dy = turns[ti]
+            if t > cursor:
+                out.append(Step(list(step.keys), t - cursor, max(0.0, cursor - clock)))
+            out.append(Turn(dx, dy, 0.0))
+            clock = cursor = t
+            ti += 1
+        if step_end > cursor:
+            out.append(Step(list(step.keys), step_end - cursor, max(0.0, cursor - clock)))
+        clock = source_clock = step_end
     while ti < len(turns):
         t, dx, dy = turns[ti]
         out.append(Turn(dx, dy, max(0.0, t - clock)))
@@ -258,57 +263,75 @@ def load_all(base: Path, name: str | None = None) -> list[Lesson]:
             continue
         if name and lesson.name != name:
             continue
+        lesson.source_path = path
         out.append(lesson)
     return out
 
 
 def merge(lessons: list[Lesson]) -> Lesson | None:
-    """Свести несколько проходов одного маршрута в один — по медиане.
-
-    Берём только удачные уроки и только те, где последовательность клавиш совпала:
-    если человек в одном проходе пошёл иначе, усреднять с ним нечего. Длительности
-    и паузы усредняются медианой — она устойчива к одному смазанному проходу.
-    """
-    good = [l for l in lessons if l.ok is not False and l.steps]
+    """Select a complete successful demonstration, preferring proven replay."""
+    good = [l for l in lessons if l.ok is True and l.steps and l.capture_ok
+            and l.replay_ok is not False and l.goal is not None]
     if not good:
         return None
     if len(good) == 1:
         return good[0]
+    # Choose a demonstrated trajectory. A median is a new, untested route;
+    # it must not silently replace one that has actually been replayed.
+    return min(good, key=lambda l: (l.replay_ok is not True, l.duration()))
 
-    def shape(lesson: Lesson) -> list:
-        """Форма прохода: чем был каждый шаг. Повороты и удержания — разные вещи."""
-        out = []
-        for st in lesson.steps:
-            out.append(("поворот",) if isinstance(st, Turn) else tuple(st.keys))
-        return out
 
-    ref = good[0]
-    same = [l for l in good if shape(l) == shape(ref)]
-    if len(same) < 2:
-        log.info("проходы разной формы — беру самый короткий удачный")
-        return min(good, key=lambda l: l.duration())
+def infer_goal(name: str) -> str | None:
+    name = name.lower()
+    if "lock" in name or "лок" in name or "закры" in name:
+        return "lock"
+    if "лент" in name or "belt" in name:
+        return "prompt"
+    return None
 
-    steps = []
-    for i, s in enumerate(ref.steps):
-        pauses = [l.steps[i].pause for l in same]
-        if isinstance(s, Turn):
-            # Углы тоже усредняем медианой: случайные дёргания мышью в одном
-            # проходе так не портят общий поворот.
-            dxs = [l.steps[i].dx for l in same]
-            dys = [l.steps[i].dy for l in same]
-            steps.append(Turn(int(statistics.median(dxs)), int(statistics.median(dys)),
-                              statistics.median(pauses)))
-            continue
-        holds = [l.steps[i].hold for l in same]
-        steps.append(Step(list(s.keys), statistics.median(holds),
-                          statistics.median(pauses)))
-    log.info("свёл %s одинаковых проходов в один", len(same))
-    return Lesson(name=ref.name, steps=steps, note=f"медиана по {len(same)} проходам",
-                  ok=True)
+
+def goal_check(farmer, goal):
+    """Read-only checks. A purchase prompt proves arrival, not a transaction."""
+    if goal == "lock":
+        return bool(farmer.read_lock_left(quick=True))
+    if goal == "prompt":
+        return bool(farmer.sees("purchase"))
+    return False
+
+
+class GoalCheck:
+    """Purchase evidence follows the farm's existing cash-debit check.
+
+    Two independent reads must confirm a debit, and the lesson must contain E.
+    Missing OCR data never becomes success. This confirms spending, not delivery
+    of an item to the base (which is a separate task).
+    """
+    def __init__(self, farmer, goal, interacted=lambda: False):
+        self.farmer, self.goal, self.interacted = farmer, goal, interacted
+        self.before = None
+        if goal == "purchase":
+            a, b = self._cash(), self._cash()
+            if a is not None and b is not None:
+                self.before = min(a, b)
+
+    def _cash(self):
+        value = self.farmer.read_cash(toggle=False)
+        return self.farmer.read_hud_cash() if value is None else value
+
+    def __call__(self):
+        if self.goal != "purchase":
+            return goal_check(self.farmer, self.goal)
+        if self.before is None or not self.interacted():
+            return False
+        a = self._cash()
+        if a is None or a >= self.before:
+            return False
+        b = self._cash()
+        return b is not None and b < self.before
 
 
 def teach(farmer, name: str, seconds: float = 60.0, countdown: int = 5,
-          setup: bool = False) -> Lesson:
+          setup: bool = False, goal: str | None = None) -> Lesson:
     """Записать проход человека.
 
     По умолчанию бот НИЧЕГО не трогает: ни мыши, ни клавиатуры, ни камеры. Только
@@ -318,10 +341,12 @@ def teach(farmer, name: str, seconds: float = 60.0, countdown: int = 5,
     получаются воспроизводимее, но управление на несколько секунд уходит к боту —
     поэтому по умолчанию выключено.
     """
+    from .recorder import InputLog, Recorder
+    goal = goal or infer_goal(name)
     if setup:
         log.info("готовлю старт: респавн и камера")
-        if not farmer.to_reference():
-            log.warning("опорное состояние не взято — урок будет от неизвестной точки")
+        if not farmer.to_reference(aim=False):
+            raise RuntimeError("опорное состояние не взято — запись отменена")
 
     print()
     print("=" * 60)
@@ -332,74 +357,100 @@ def teach(farmer, name: str, seconds: float = 60.0, countdown: int = 5,
     for i in range(countdown, 0, -1):
         print(f"  начинаю через {i}...", flush=True)
         time.sleep(1)
-    print("  ПОШЁЛ")
-
     rec = Recorder(farmer.window, farmer.screens_dir / f"lesson_{name}_{int(time.time())}.mp4",
                    fps=8) if farmer.screens_dir else None
-    if rec:
-        rec.note(f"урок: {name}")
-        rec.start()
-    inp = InputLog().start()
+    box = farmer.window.client_box()
+    context = {"size": [box.width, box.height],
+               "shift_lock": bool(farmer.hand.shift_lock),
+               "start": "reference" if setup else "manual"}
+    check = GoalCheck(farmer, goal)
+    baseline = check()
+    inp = InputLog(hwnd=farmer.window.hwnd, shift_lock=farmer.hand.shift_lock).start()
+    check.interacted = lambda: any(k == "e" and kind == "вниз" for _, k, kind in inp.events)
 
     # Вехи урока. Лок отмечаем отдельно: он должен быть ПЕРВЫМ действием цикла,
     # потому что окно лока — 60 секунд на нуле ребёрнов, и весь поход обязан в него
     # уложиться. По временам вех сразу видно, укладывается или нет.
     marks: dict[str, float] = {}
-    t0 = time.time()
+    t0 = inp.started
     end = t0 + seconds
-    while time.time() < end:
-        text = None
-        for key, needles in (("лок", ("locked your base",)),
-                             ("покупка", ("purchase",))):
-            if key in marks:
-                continue
-            if text is None:
-                text = ""
-            if farmer.sees(*needles):
-                marks[key] = round(time.time() - t0, 1)
-                log.info("веха %r на %.1f с", key, marks[key])
+    armed = not baseline
+    try:
+        if rec:
+            rec.note(f"урок: {name}")
+            rec.start()
+        print("  ПОШЁЛ", flush=True)
+        while time.monotonic() < end:
+            reached = check()
+            if not reached:
+                armed = True
+            if armed and reached and goal not in marks:
+                marks[goal] = round(time.monotonic() - t0, 1)
                 if rec:
-                    rec.note(f"урок: {name} — {key}")
-        time.sleep(0.5)
-    saw_prompt = "покупка" in marks
-
-    holds = inp.stop() and inp.holds()
+                    rec.note(f"урок: {name} — {goal}")
+            time.sleep(0.5)
+    finally:
+        try:
+            inp.stop()
+        finally:
+            if rec:
+                rec.stop()
+    holds = inp.holds()
     turns = list(inp.turns)
-    if rec:
-        rec.stop()
     steps = merge_turns(holds_to_steps(holds), turns, holds)
     mouse = [(k, dur) for k, _, dur in holds if k in MOUSE_KEYS]
     note = ", ".join(f"{k} на {v} с" for k, v in marks.items()) or "вех не было"
     if mouse:
         held = sum(d for _, d in mouse)
         note += f"; ПКМ/ЛКМ {len(mouse)} раз, суммарно {held:.1f} с"
-    lesson = Lesson(name=name, steps=steps, ok=saw_prompt or None, note=note)
+    unsupported = {k for _, k, kind in inp.events
+                   if kind == "вниз" and k not in REPLAY_KEYS and k != "ПКМ"}
+    if unsupported:
+        inp.capture_ok = False
+        inp.error = "есть действия интерфейса без координат: " + ", ".join(sorted(unsupported))
+    events = [(t, "key", k, kind) for t, k, kind in inp.events
+              if k in REPLAY_KEYS or k == "ПКМ"]
+    events += [(t, "turn", dx, dy) for t, dx, dy in turns]
+    if not inp.capture_ok:
+        note += f"; запись неполная: {inp.error}"
+    lesson = Lesson(name=name, steps=steps, ok=(goal in marks) if goal else None,
+                    note=note, goal=goal, capture_ok=inp.capture_ok,
+                    events=sorted(events, key=lambda e: e[0]), context=context)
     print(f"  записано {len(steps)} шагов, {lesson.duration():.1f} с — {note}")
-    if "лок" in marks and "покупка" in marks:
-        spent = marks["покупка"] - marks["лок"]
-        print(f"  от лока до покупки {spent:.1f} с из 60 доступных"
-              f"{' — НЕ УКЛАДЫВАЕМСЯ' if spent > 55 else ''}")
     return lesson
 
 
-def replay(farmer, lesson: Lesson, check=None, tolerance: float = 1.0) -> dict:
+def replay(farmer, lesson: Lesson, check=None, tolerance: float | None = None) -> dict:
     """Повторить урок. check — признак цели; проверяется по ходу и в конце."""
     report = {"урок": lesson.name, "шагов": len(lesson.steps), "цель": False}
+    if check and check():
+        report["ошибка"] = "цель уже выполнена до повтора; результат нельзя приписать уроку"
+        return report
     # Опорное состояние БЕЗ наведения на якорь.
     #
     # Повороты в уроке относительные: они записаны от того положения, в котором
     # человек оказался после СВОЕГО респавна. Если перед повтором развернуть
     # камеру на якорь, весь путь окажется смещён ровно на этот доворот — а он
     # бывает огромным, в логе видели 1395 единиц мыши, почти четверть оборота.
-    if not farmer.to_reference(aim=False):
+    box = farmer.window.client_box()
+    if lesson.context and (lesson.context.get("size") != [box.width, box.height]
+                           or lesson.context.get("shift_lock") != bool(farmer.hand.shift_lock)):
+        report["ошибка"] = "размер окна или режим камеры отличается от урока"
+        return report
+    if lesson.context.get("start") != "manual" and not farmer.to_reference(aim=False):
         report["ошибка"] = "опорное состояние не взято"
         return report
 
     log.info("повторяю урок %r: %s шагов, %.1f с", lesson.name, len(lesson.steps),
              lesson.duration())
+    if lesson.events:
+        farmer.hand.replay_timeline(lesson.events)
+        report["цель"] = bool(check and check())
+        lesson.replay_ok = report["цель"] if check else None
+        return report
     for i, step in enumerate(lesson.steps, 1):
         if step.pause:
-            time.sleep(min(step.pause, tolerance))
+            time.sleep(step.pause)
         if isinstance(step, Turn):
             farmer.hand.look(step.dx, step.dy)
             continue
@@ -419,4 +470,5 @@ def replay(farmer, lesson: Lesson, check=None, tolerance: float = 1.0) -> dict:
     if check and not report["цель"]:
         report["цель"] = bool(check())
     log.info("повтор: %s", report)
+    lesson.replay_ok = report["цель"] if check else None
     return report

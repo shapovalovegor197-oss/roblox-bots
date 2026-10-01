@@ -34,6 +34,7 @@ from pathlib import Path
 
 from .config import ROOT
 from .log import get
+from .storage import update_json
 
 log = get("knowledge")
 
@@ -94,6 +95,7 @@ class Knowledge:
     # 04.09 показал, что от спавна до плиты доходит фиксированное удержание.
     # Помним, какая сторона сработала, чтобы не перебирать обе каждый раз.
     blind_lock_key: str | None = None
+    lock_attempts: list[dict] = field(default_factory=list)
 
     _dirty: bool = False
     _last_save: float = 0.0
@@ -123,6 +125,7 @@ class Knowledge:
         kb.lock_heading = data.get("лок_градусов")
         kb.lock_steps = data.get("лок_шагов")
         kb.blind_lock_key = data.get("слепой_лок_клавиша")
+        kb.lock_attempts = data.get("попытки_лока") or []
         kb.forget_old()
         log.info("память: %s клавиш в таблице, %s упоров, мышь %s",
                  len(kb.axes), len(kb.walls),
@@ -153,16 +156,24 @@ class Knowledge:
             "лок_градусов": self.lock_heading,
             "лок_шагов": self.lock_steps,
             "слепой_лок_клавиша": self.blind_lock_key,
+            "попытки_лока": self.lock_attempts,
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(self.path)
+        update_json(self.path, data)
         self._dirty = False
         self._last_save = time.time()
 
     def touch(self) -> None:
         self._dirty = True
+
+    def note_lock_attempt(self, reason: str, strategy: str, ok: bool,
+                          **details) -> None:
+        row = {"когда": time.time(), "причина": reason,
+               "способ": strategy, "успех": ok}
+        row.update({k: v for k, v in details.items() if v is not None})
+        self.lock_attempts.append(row)
+        self.lock_attempts = self.lock_attempts[-40:]
+        self.touch()
+        self.save(force=True)
 
     # ------------------------------------------------------------------
     # упоры

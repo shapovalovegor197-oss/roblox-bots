@@ -56,6 +56,18 @@ def _lockfile() -> str:
     return "var/farm_loop.%s.lock" % _имя_стола()
 
 
+def _имя_процесса(pid: int) -> str:
+    """Имя исполняемого файла живого процесса. Пусто — процесса нет или не видно."""
+    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED
+    if not h:
+        return ""
+    буфер = ctypes.create_unicode_buffer(512)
+    размер = ctypes.c_ulong(len(буфер))
+    ок = ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, буфер, ctypes.byref(размер))
+    ctypes.windll.kernel32.CloseHandle(h)
+    return os.path.basename(буфер.value) if ок else ""
+
+
 def _процесс_жив(pid: int) -> bool:
     h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED
     if not h:
@@ -66,22 +78,38 @@ def _процесс_жив(pid: int) -> bool:
     return bool(ок) and код.value == 259                          # STILL_ACTIVE
 
 
+def _наш_же(pid: int, имя_файла: str) -> bool:
+    """Тот ли это процесс, что брал замок, — или номер уже переиспользован.
+
+    Номера процессов Windows переиспользует, и довольно быстро. В ночь на 16.09
+    это стоило пяти сорванных прогонов подряд: замок держал pid 23752, а под
+    этим номером жил уже `browser.exe` — наш питон давно умер. Проверка «процесс
+    жив» отвечала «жив», и дверь оставалась запертой навсегда.
+    """
+    if not имя_файла:
+        return _процесс_жив(pid)          # старый замок без имени: судим как раньше
+    return _имя_процесса(pid).lower() == имя_файла.lower()
+
+
 def занять(имя: str = "скрипт") -> None:
     """Взять ввод в единоличное владение (на ЭТОМ столе) или выйти."""
     lockfile = _lockfile()
-    прежний = 0
+    прежний, чей = 0, ""
     if os.path.exists(lockfile):
         try:
             with open(lockfile, encoding="utf-8") as fh:
-                прежний = int(fh.read().strip() or 0)
-        except (ValueError, OSError):
-            прежний = 0
-    if прежний and прежний != os.getpid() and _процесс_жив(прежний):
+                части = fh.read().strip().split(maxsplit=1)
+            прежний = int(части[0] or 0)
+            чей = части[1] if len(части) > 1 else ""
+        except (ValueError, OSError, IndexError):
+            прежний, чей = 0, ""
+    if прежний and прежний != os.getpid() and _наш_же(прежний, чей):
         sys.exit("ввод уже занят (pid %d) на столе %s. Два хозяина на одном "
                  "персонаже оставляют базу открытой — останови прежний, потом "
                  "запускай %s." % (прежний, _имя_стола(), имя))
+    # Пишем номер И имя процесса: по одному номеру своего от чужого не отличить.
     with open(lockfile, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
+        fh.write(f"{os.getpid()} {os.path.basename(sys.executable)}")
 
 
 def запереть_базу(f, попыток: int = 2) -> int | None:

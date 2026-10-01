@@ -183,7 +183,7 @@ class Transfer:
         if not self.place():
             return False
 
-        sec = self.receiver.lock_base()
+        sec = self.receiver.lock_with_retries(attempts=2)
         after = self.receiver.shot("transfer_after")
         log.info("перенос завершён, база заперта на %s с. Пруфы: %s | %s", sec, before, after)
         return True

@@ -183,8 +183,15 @@ class Recorder:
 class InputLog:
     """Поток нажатий: [(время, клавиша, 'вниз'|'вверх')]. Для записи прохода руками."""
 
-    def __init__(self, poll: float = 0.02) -> None:
+    def __init__(self, poll: float = 0.02, hwnd=None, shift_lock=False) -> None:
         self.poll = poll
+        self.hwnd = hwnd
+        self.shift_lock = shift_lock
+        self.capture_ok = True
+        self.error = None
+        self.started = 0.0
+        self.ended = None
+        self._raw = None
         self.events: list[tuple[float, str, str]] = []
         # Повороты камеры: [(время, суммарный сдвиг мыши по x, по y)].
         # Пишем ТОЛЬКО пока зажата ПКМ — именно тогда движение мыши крутит
@@ -193,52 +200,59 @@ class InputLog:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def _cursor(self) -> tuple[int, int]:
-        pt = ctypes.wintypes.POINT()
-        user32.GetCursorPos(ctypes.byref(pt))
-        return pt.x, pt.y
-
     def _loop(self) -> None:
         state = {k: False for k in WATCH_KEYS}
-        t0 = time.time()
-        # Накопитель поворота: пока ПКМ зажата, складываем смещения курсора.
-        # Без этого урок остаётся наполовину пустым: в нём есть «прошёл вперёд 1.5 с», но
-        # нет «повернулся на столько-то», а весь путь как раз и состоит из
-        # чередования того и другого.
-        turning = False
-        acc_x = acc_y = 0
-        last = self._cursor()
-        while not self._stop.is_set():
-            for name, vk in WATCH_KEYS.items():
-                down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
-                if down != state[name]:
-                    state[name] = down
-                    self.events.append((time.time() - t0, name, "вниз" if down else "вверх"))
-
-            rmb = state.get("ПКМ", False)
-            now = self._cursor()
-            if rmb:
-                if not turning:
-                    turning, acc_x, acc_y = True, 0, 0
-                else:
-                    acc_x += now[0] - last[0]
-                    acc_y += now[1] - last[1]
-            elif turning:
-                turning = False
-                if abs(acc_x) > 3 or abs(acc_y) > 3:
-                    self.turns.append((time.time() - t0, acc_x, acc_y))
-            last = now
-            time.sleep(self.poll)
+        user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
+        try:
+            while not self._stop.is_set():
+                active = not self.hwnd or user32.GetForegroundWindow() == self.hwnd
+                for name, vk in WATCH_KEYS.items():
+                    down = active and bool(user32.GetAsyncKeyState(vk) & 0x8000)
+                    if down != state[name]:
+                        state[name] = down
+                        self.events.append((time.monotonic() - self.started, name,
+                                            "вниз" if down else "вверх"))
+                self._stop.wait(self.poll)
+        except Exception as exc:
+            self.capture_ok = False
+            self.error = str(exc)
 
     def start(self) -> "InputLog":
+        from .rawmouse import RawMouse
+        self.started = time.monotonic()
+        self._raw = RawMouse(self.hwnd, self.shift_lock)
+        try:
+            self._raw.start(self.started)
+        except Exception as exc:
+            self.capture_ok = False
+            self.error = str(exc)
+            log.warning("мышь не записывается; урок неполный: %s", exc)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         return self
 
     def stop(self) -> list[tuple[float, str, str]]:
+        if self.ended is not None:
+            return self.events
+        self.ended = time.monotonic() - self.started
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
+            if self._thread.is_alive():
+                self.capture_ok = False
+        if self._raw:
+            self._raw.stop()
+            self.turns = [t for t in self._raw.turns if t[0] <= self.ended]
+            if self._raw.error:
+                self.capture_ok = False
+                self.error = self._raw.error
+        opened = {}
+        for t, key, kind in self.events:
+            if kind == "вниз":
+                opened[key] = t
+            else:
+                opened.pop(key, None)
+        self.events.extend((self.ended, key, "вверх") for key in opened)
         return self.events
 
     def holds(self) -> list[tuple[str, float, float]]:

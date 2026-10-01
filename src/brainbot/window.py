@@ -160,6 +160,31 @@ def wait_for_window(pid: int, timeout: float = 120.0, poll: float = 1.0) -> Robl
     before = {w.hwnd for w in enum_roblox_windows()}
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # Окно ошибки использует тот же класс, но другой заголовок, поэтому
+        # enum_roblox_windows его намеренно не возвращает. Ловим его по PID,
+        # чтобы не ждать полный таймаут перед новым одноразовым тикетом.
+        auth_error = [False]
+
+        def error_cb(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            if _text(user32.GetClassNameW, hwnd, 256) != ROBLOX_CLASS:
+                return True
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value != pid:
+                return True
+            title = _text(user32.GetWindowTextW, hwnd).lower()
+            if ("авторизац" in title or "authentication" in title or
+                    "authorization" in title):
+                log.warning("процесс pid=%s открыл ошибку авторизации: %r", pid, title)
+                auth_error[0] = True
+                return False
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(error_cb), 0)
+        if auth_error[0]:
+            return None
         windows = enum_roblox_windows()
         for w in windows:
             if w.pid == pid:

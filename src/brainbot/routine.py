@@ -64,7 +64,7 @@ class Routine:
     # --- отдельные шаги цикла ---
 
     def do_lock(self) -> None:
-        sec = self.farmer.lock_base()
+        sec = self.farmer.lock_with_retries(attempts=2)
         if sec:
             self.lock_until = time.time() + sec
             self.stats["locks"] += 1

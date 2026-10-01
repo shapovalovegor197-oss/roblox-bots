@@ -18,6 +18,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,13 @@ def normalize(s: str) -> str:
     Помимо кириллицы, движок путает 0/o, 1/l, 5/s — приводим к одному виду,
     пробелы и знаки выбрасываем: сравнение всё равно нечёткое.
     """
+    # Имена в каталоге содержат итальянские диакритики (`Lirilì Larilà`).
+    # OCR обычно возвращает их без ударения; если просто выкинуть не-ASCII,
+    # эталон превращается в `lirillaril` и хуже совпадает с правильным чтением
+    # `lirililarila`. Сначала раскладываем букву и ударение, затем убираем
+    # только комбинируемый знак.
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", s)
+                if not unicodedata.combining(ch))
     table = str.maketrans({**HOMOGLYPHS,
                            "0": "o", "1": "l", "5": "s", "8": "b", "|": "l", "!": "l"})
     return re.sub(r"[^a-z]", "", s.lower().translate(table))
@@ -106,11 +114,40 @@ class Catalog:
 
     # --- поиск ---
 
+    def _fuzzy_prefix(self, n: str, cutoff: float = 0.70) -> Brainrot | None:
+        """Однозначное похожее начало для обрезанного OCR (`urili` -> Lirilì).
+
+        Сравниваем не с полным длинным именем, а с его началом близкой длины.
+        Берём ответ только с заметным отрывом от второго кандидата: короткий
+        обрывок не должен случайно превратиться в редкую цель ребёрна.
+        """
+        if len(n) < 5:
+            return None
+        scored = []
+        for known in self._norm:
+            widths = range(max(5, len(n) - 1), min(len(known), len(n) + 2) + 1)
+            score = max((difflib.SequenceMatcher(None, n, known[:w]).ratio()
+                         for w in widths), default=0.0)
+            scored.append((score, known))
+        scored.sort(reverse=True)
+        if not scored or scored[0][0] < cutoff:
+            return None
+        if len(scored) > 1 and scored[0][0] - scored[1][0] < 0.08:
+            return None
+        return self.items[self._norm[scored[0][1]]]
+
     def match(self, text: str, cutoff: float = 0.72) -> Brainrot | None:
         """Найти брейнрота по прочитанному тексту. None — не похоже ни на что."""
         if not self.items or not text:
             return None
         n = normalize(name_part(text))
+        aliases = {
+            # Живые чтения мелкого серого промпта. Эти короткие формы нельзя
+            # безопасно угадывать общим fuzzy-поиском по 524 именам.
+            "urili": "lirililarila",
+            "larii": "lirililarila",
+        }
+        n = aliases.get(n, n)
         # Меньше четырёх букв — это не имя, а обрывок или число. Без этой отсечки
         # строка «$25» уверенно матчилась в брейнрота «25» из справочника.
         if len(n) < 4:
@@ -130,6 +167,9 @@ class Catalog:
             inside = [k for k in self._norm if n in k]
             if len(inside) == 1:
                 return self.items[self._norm[inside[0]]]
+            prefix = self._fuzzy_prefix(n)
+            if prefix is not None:
+                return prefix
         hit = difflib.get_close_matches(n, self._norm.keys(), n=1, cutoff=cutoff)
         if hit:
             return self.items[self._norm[hit[0]]]
@@ -148,6 +188,9 @@ class Catalog:
                 starts = [k for k in self._norm if k.startswith(n)]
                 if len(starts) == 1:
                     return self.items[self._norm[starts[0]]]
+                prefix = self._fuzzy_prefix(n)
+                if prefix is not None:
+                    return prefix
             hit = difflib.get_close_matches(n, self._norm.keys(), n=1, cutoff=cutoff)
             if not hit:
                 continue

@@ -43,6 +43,17 @@ def setup(logs_dir: Path, level: int = logging.INFO) -> None:
         "%(asctime)s %(levelname)-7s %(name)-14s %(message)s", "%H:%M:%S"
     )
 
+    # При скрытом Start-Process Windows оставляет stdout в системной cp1251.
+    # OCR иногда возвращает символы Latin-1 (например, ``\xec``), которые этот
+    # кодек не умеет вывести: logging печатает большой traceback в stderr и
+    # теряет полезную строку. Сохраняем процесс и журнал, экранируя лишь такой
+    # неподдерживаемый символ. Для обычного UTF-8 терминала это ничего не меняет.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(fmt)
 

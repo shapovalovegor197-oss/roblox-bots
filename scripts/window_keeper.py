@@ -39,15 +39,15 @@ while True:
     try:
         for win in enum_roblox_windows():
             box = win.client_box()
-            if (box.width, box.height) == НУЖНО:
+            if ((box.width, box.height) == НУЖНО and box.left >= 0 and box.top >= 0):
                 continue
-            r = wintypes.RECT()
-            ctypes.windll.user32.GetWindowRect(win.hwnd, ctypes.byref(r))
-            win.move_resize(r.left, r.top, *НУЖНО)
+            win.move_resize(0, 0, *НУЖНО)
             новое = win.client_box()
             правок += 1
-            сказать("окно съехало на %dx%d — вернул %dx%d%s (правка №%d)"
-                    % (box.width, box.height, новое.width, новое.height,
+            сказать("окно съехало на %dx%d @(%d,%d) — вернул %dx%d @(%d,%d)%s "
+                    "(правка №%d)"
+                    % (box.width, box.height, box.left, box.top,
+                       новое.width, новое.height, новое.left, новое.top,
                        "" if (новое.width, новое.height) == НУЖНО else " — НЕ ПРИВЕЛОСЬ",
                        правок))
     except Exception as exc:                                  # noqa: BLE001
