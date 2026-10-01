@@ -21,7 +21,10 @@ from brainbot.vision import Templates                      # noqa: E402
 from agents.sab import trade                               # noqa: E402
 
 режим, ник = sys.argv[1], sys.argv[2]
-карточка = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+# Имя предмета OCR в окне обмена читает плохо (01.10: Strawberrelli Flamingelli
+# пришёл как «ттвеш»), поэтому номер карточки надёжнее: сетка 3 в ряд,
+# считая с нуля сверху слева.
+карточка = sys.argv[3] if len(sys.argv) > 3 else "0"   # номер или имя предмета
 single.занять("обмен")
 s = config.load(); log.setup(s.logs_dir)
 win = enum_roblox_windows()[0]
@@ -32,11 +35,14 @@ tpl = Templates(s.template_dir, s.vision["match_threshold"], s.vision.get("regio
 
 def шаг(имя, ок):
     print("%s %-22s %s" % (time.strftime("%H:%M:%S"), имя, "OK" if ок else "НЕТ"), flush=True)
-    f.shot("trade_" + имя)
+    # Имя кадра латиницей: OpenCV молча не пишет файлы с кириллицей в пути.
+    f.shot("trade_step%02d" % шаг.n)
+    шаг.n += 1
     if not ок:
         sys.exit(1)
 
 
+шаг.n = 1
 if режим == "send":
     шаг("окно_обмена", trade.открыть(f, hand, tpl))
     шаг("приглашение", trade.позвать(f, hand, ник))
@@ -51,7 +57,26 @@ elif режим == "accept":
     шаг("сессия", trade.ждать_сессию(f, 30))
 else:
     sys.exit("режим: send или accept")
+def точка_по_имени(имя: str):
+    """Карточка нашей половины, ближайшая к подписи с этим именем (OCR сетки)."""
+    from brainbot import ocr
+    from brainbot.brainrots import normalize
+    кадр = f.frame()
+    цель = normalize(имя)
+    точки = trade.карточки(f)
+    for текст, x, y in ocr.lines(кадр):
+        н = normalize(текст)
+        if len(н) >= 5 and (н in цель or цель[:8] in н) and x < 680:
+            print("подпись «%s» на (%d,%d)" % (текст, x, y))
+            return min(точки, key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2)
+    return None
+
+
 if режим == "send":
-    точка = trade.карточки(f)[карточка]
+    if карточка.isdigit():
+        точка = trade.карточки(f)[int(карточка)]
+    else:
+        точка = точка_по_имени(карточка)
+        шаг("предмет_найден", точка is not None)
     шаг("предмет_положен", trade.положить(f, hand, точка))
 шаг("обмен_завершён", trade.довести(f, hand, 180))
