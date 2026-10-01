@@ -27,7 +27,8 @@ from brainbot.farm import Farmer, FarmTuning               # noqa: E402
 from brainbot.brainrots import normalize                   # noqa: E402
 
 _ЧИСЛА = [a for a in sys.argv[1:] if not a.startswith("--")]
-sys.argv = [sys.argv[0]] + _ЧИСЛА + [a for a in sys.argv[1:] if a.startswith("--")]
+_ФЛАГИ = [a for a in sys.argv[1:] if a.startswith("--")]
+sys.argv = [sys.argv[0]] + _ЧИСЛА      # числа позиционно; флаги разбираются ниже
 MINUTES = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
 MIN_INCOME = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
 # Сколько перерождений сделать за прогон. Ребёрн СТИРАЕТ деньги и брейнротов —
@@ -38,12 +39,12 @@ REBIRTHS_GOAL = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 # стартовое значение; обычные запуски по-прежнему начинаются с нуля.
 REBIRTHS_START = (int(sys.argv[4]) if len(sys.argv) > 4
                   and str(sys.argv[4]).isdigit() else 0)
-DRY_RUN = "--dry-run" in sys.argv
-ACCOUNT = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--account=")),
+DRY_RUN = "--dry-run" in _ФЛАГИ
+ACCOUNT = next((a.split("=", 1)[1] for a in _ФЛАГИ if a.startswith("--account=")),
                "raven")
 # Приватка: посторонних нет — значит лок не нужен (решение 11.09). Круг идёт
 # без плиты и подтверждения двери, а время у ленты не режется таймером лока.
-PRIVATE = "--private" in sys.argv
+PRIVATE = "--private" in _ФЛАГИ
 
 # Секунд до конца лока, когда пора домой. Не константа: дорога домой плюс сам
 # лок занимают около сорока секунд, и если уходить с ленты за восемь, база
@@ -248,7 +249,9 @@ def say(msg: str) -> None:
     save()
 
 
-KNOW = "var/knowledge.json"
+# Цели ребёрна у каждого аккаунта свои: 01.10 shapovaluv стартовал с целями
+# raven из общей памяти. Исторический файл остаётся за raven.
+KNOW = "var/knowledge.json" if ACCOUNT == "raven" else "var/knowledge.%s.json" % ACCOUNT
 
 
 def load_goals() -> None:
@@ -1309,7 +1312,7 @@ def circle() -> None:
             state["_режим_охоты_объявлен"] = True
             say("РЕЖИМ ОДНОЙ ЦЕЛИ: $%.0f при пороге $%.0f, жду %s на ленте "
                 "без возвратов к воротам"
-                % (state["кэш"], need, state["цель_охоты"]))
+                % (state["кэш"] or 0, need, state["цель_охоты"]))
     else:
         state["база_пуста"] = False
         state.pop("цель_охоты", None)

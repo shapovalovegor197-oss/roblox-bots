@@ -258,7 +258,7 @@ class Farmer:
     #   * мантисса меньше 1000. HUD пишет не больше трёх цифр до точки, а
     #     потерянная точка даёт «$35059m» = 35 млрд вместо 35 млн (замер 22:16).
     # `re.search`, а не `match`: перед знаком бывает мусор («,$35.59m»).
-    _CASH_RX = re.compile(r"\$\s*([\d.,]+)\s*([kmb])")
+    _CASH_RX = re.compile(r"\$\s*([\d.,]+)\s*(qa|[kmbt])")
 
     def _parse_cash(self, text: str) -> float | None:
         """Строка OCR -> сумма. None, если строка не похожа на деньги HUD."""
@@ -277,8 +277,10 @@ class Farmer:
             return None
         if not 0 < base < 1000:
             return None
-        value = base * {"k": 1e3, "m": 1e6, "b": 1e9}[m.group(2)]
-        return value if 1000 < value < 1e12 else None
+        # T и Qa — касса после ребёрнов: 01.10 у shapovaluv было $3.38T, и
+        # без суффикса T чтение возвращало None, а круг падал на нём же.
+        value = base * {"k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12, "qa": 1e15}[m.group(2)]
+        return value if 1000 < value < 1e18 else None
 
     def _read_hud_cash_once(self) -> float | None:
         """Одно чтение наличных из HUD — ГОЛОСОВАНИЕМ четырёх способов.
